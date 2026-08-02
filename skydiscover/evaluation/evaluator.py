@@ -1,6 +1,8 @@
 import asyncio
 import errno
+import functools
 import importlib.util
+import inspect
 import logging
 import os
 import sys
@@ -78,7 +80,39 @@ class Evaluator:
 
         self.evaluate_function = module.evaluate
         self._eval_module = module
+        self._probe_mode_support(module)
         self._validate_cascade_configuration(module)
+
+    def _probe_mode_support(self, module) -> None:
+        """Record which evaluation entry points opt in to a ``mode`` argument.
+
+        ``mode`` is threaded through the whole stack but historically stopped
+        here, so a Python evaluator could never distinguish the training loop
+        from the final held-out scoring — the "test" number was a re-run of
+        train. Rather than break the ~49 evaluators already written against
+        ``evaluate(program_path)``, each function is probed once and only those
+        that *declare* the parameter receive it.
+
+        The check is deliberately strict: ``**kwargs`` does not count, so an
+        evaluator with a catch-all signature keeps its current behaviour.
+        """
+        self._mode_aware: Dict[int, bool] = {}
+        for name in ("evaluate", "evaluate_stage1", "evaluate_stage2"):
+            func = getattr(module, name, None)
+            if func is None:
+                continue
+            try:
+                params = inspect.signature(func).parameters
+                aware = (
+                    "mode" in params and params["mode"].kind is not inspect.Parameter.VAR_KEYWORD
+                )
+            except (ValueError, TypeError):
+                # Builtins and some C-implemented or exotically wrapped callables
+                # have no introspectable signature; assume the legacy contract.
+                aware = False
+            self._mode_aware[id(func)] = aware
+            if aware:
+                logger.info(f"{name}() in {self.evaluation_file} is mode-aware")
 
     def _validate_cascade_configuration(self, module) -> None:
         if not self.config.cascade_evaluation:
@@ -105,8 +139,18 @@ class Evaluator:
         Args:
             program_solution: Source code of the candidate program.
             program_id: Optional identifier for logging.
-            mode: ``"train"`` or ``"test"``.  Ignored by the Python evaluator
-                  (the containerized evaluator passes it to evaluate.sh).
+            mode: ``"train"`` during the search loop, ``"test"`` for the single
+                  authoritative scoring of the best program at the end.
+
+                  Opt-in: it is forwarded only to evaluation functions that
+                  declare a ``mode`` parameter, so existing
+                  ``evaluate(program_path)`` evaluators are unaffected. It is
+                  also always exported as ``SKYDISCOVER_EVAL_MODE``.
+
+                  Use it to keep the loop honest: score on a held-out split in
+                  ``"train"`` and reserve untouched data for ``"test"``.
+                  Otherwise the search optimises the very instances it is
+                  graded on, and the reported final number is inflated.
         """
         start_time = time.time()
         label = f" {program_id}" if program_id else ""
@@ -133,10 +177,12 @@ class Evaluator:
                     logger.warning(f"Failed to write image sidecar: {e}")
 
             try:
-                if self.config.cascade_evaluation:
-                    result = await self._cascade_evaluate(temp_path)
+                # The cascade is a training-loop screen; the authoritative test
+                # score must come from the full evaluator, never a stage1-gated one.
+                if self.config.cascade_evaluation and mode != "test":
+                    result = await self._cascade_evaluate(temp_path, mode)
                 else:
-                    result = await self._run_stage(self.evaluate_function, temp_path)
+                    result = await self._run_stage(self.evaluate_function, temp_path, mode)
 
                 eval_result = self._normalize_result(result)
 
@@ -204,17 +250,30 @@ class Evaluator:
     # Internals
     # ------------------------------------------------------------------
 
-    async def _run_stage(self, func, program_path: str) -> Any:
+    async def _run_stage(self, func, program_path: str, mode: str = "train") -> Any:
         """Run a single evaluation function in a thread with timeout."""
         loop = asyncio.get_running_loop()
 
         return await asyncio.wait_for(
-            loop.run_in_executor(None, self._call_with_env, func, program_path),
+            loop.run_in_executor(
+                None, functools.partial(self._call_with_env, func, program_path, mode)
+            ),
             timeout=self.config.timeout,
         )
 
     @contextmanager
-    def _scoped_env(self):
+    def _scoped_env(self, mode: str = "train"):
+        # Exported for subprocess-style evaluators that shell out and cannot
+        # receive the keyword argument.
+        #
+        # Written outside the lock on purpose. The mode is a property of the
+        # phase rather than of a candidate — every concurrent evaluation in the
+        # search loop is "train", and the single "test" evaluation runs alone
+        # after the loop — so concurrent writers only ever write the same value.
+        # Taking the lock here would serialize every evaluation behind it,
+        # because the lock is held across the whole user evaluation below.
+        os.environ["SKYDISCOVER_EVAL_MODE"] = mode
+
         if not self.env_vars:
             yield
             return
@@ -231,9 +290,10 @@ class Evaluator:
                     else:
                         os.environ[key] = old_value
 
-    def _call_with_env(self, func, program_path: str) -> Any:
-        with self._scoped_env():
-            return func(program_path)
+    def _call_with_env(self, func, program_path: str, mode: str = "train") -> Any:
+        with self._scoped_env(mode):
+            kwargs = {"mode": mode} if self._mode_aware.get(id(func)) else {}
+            return func(program_path, **kwargs)
 
     def _normalize_result(self, result: Any) -> EvaluationResult:
         if isinstance(result, EvaluationResult):
@@ -244,19 +304,19 @@ class Evaluator:
         logger.warning(f"Unexpected result type: {type(result)}")
         return EvaluationResult(metrics={"error": 0.0})
 
-    async def _cascade_evaluate(self, program_path: str) -> EvaluationResult:
+    async def _cascade_evaluate(self, program_path: str, mode: str = "train") -> EvaluationResult:
         """Run cascade evaluation: stage1 → threshold check → stage2 → merge."""
         module = self._eval_module
 
         if not hasattr(module, "evaluate_stage1"):
             return self._normalize_result(
-                await self._run_stage(self.evaluate_function, program_path)
+                await self._run_stage(self.evaluate_function, program_path, mode)
             )
 
         # Stage 1
         try:
             stage1 = self._normalize_result(
-                await self._run_stage(module.evaluate_stage1, program_path)
+                await self._run_stage(module.evaluate_stage1, program_path, mode)
             )
         except asyncio.TimeoutError:
             logger.error(f"Stage 1 timed out ({self.config.timeout}s)")
@@ -284,7 +344,7 @@ class Evaluator:
         # Stage 2
         try:
             stage2 = self._normalize_result(
-                await self._run_stage(module.evaluate_stage2, program_path)
+                await self._run_stage(module.evaluate_stage2, program_path, mode)
             )
         except asyncio.TimeoutError:
             logger.error(f"Stage 2 timed out ({self.config.timeout}s)")

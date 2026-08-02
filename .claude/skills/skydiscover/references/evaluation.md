@@ -117,11 +117,33 @@ This predicate is **duplicated** in `default_discovery_controller.py` and
 
 ## `mode="train"` / `mode="test"`
 
-Threaded end to end, but **only `ContainerizedEvaluator` forwards it**. The
-Python `Evaluator` ignores it, and every shipped `evaluate.sh` in math/ADRS
-carries the comment `# MODE ($2) accepted but ignored`. So the post-loop
-"authoritative test score" is, for most tasks, a bit-identical re-run of the
-train evaluation.
+Threaded end to end and forwarded by **both** evaluators. The Python
+`Evaluator` forwards it **opt-in**, by signature introspection:
+
+```python
+def evaluate(program_path, mode="train"):   # receives "train" / "test"
+def evaluate(program_path):                 # unchanged, never sees mode
+def evaluate(program_path, **kwargs):       # unchanged — VAR_KEYWORD doesn't count
+```
+
+`evaluate_stage1` / `evaluate_stage2` are probed the same way. The mode is also
+always exported as **`SKYDISCOVER_EVAL_MODE`**, for evaluators that shell out.
+
+`mode="test"` **bypasses the cascade** — `cascade_evaluation` defaults to `True`,
+and the authoritative score must come from the full evaluator, not a
+stage1-gated screen.
+
+⚠️ Every shipped `evaluate.sh` in math/ADRS still carries
+`# MODE ($2) accepted but ignored`, and none of the ~49 Python evaluators
+declares `mode` yet — so for those tasks the post-loop "test score" is still a
+re-run of train. The mechanism now exists; individual benchmarks have to use it.
+
+**The discipline it enables** — this is the point. An AlphaEvolve-style loop
+optimises whatever you score it on, so if the loop and the final report use the
+same instances, the reported number is inflated and you cannot tell a real
+algorithm from one that memorised the test vectors. Score on a held-out split
+during `"train"`, keep a slice untouched for `"test"`, and evolve a *procedure*
+rather than a fitted artifact.
 
 ## Cascade evaluation
 

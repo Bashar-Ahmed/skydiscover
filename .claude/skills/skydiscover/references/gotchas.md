@@ -85,10 +85,12 @@ Things that will cost you an afternoon if you don't know them.
 
 - The eval-failure predicate is **duplicated** in
   `default_discovery_controller.py` and `adaevolve/controller.py`. Change both.
-- `mode="test"` is only forwarded by `ContainerizedEvaluator`; the Python
-  `Evaluator` ignores it, and every shipped math/ADRS `evaluate.sh` carries
-  `# MODE ($2) accepted but ignored`. The "authoritative test score" is usually a
-  bit-identical re-run.
+- `mode` now reaches Python evaluators, but **opt-in**: only a function that
+  *declares* a `mode` parameter receives it (`**kwargs` deliberately does not
+  count). No shipped evaluator declares it yet, and every math/ADRS
+  `evaluate.sh` still carries `# MODE ($2) accepted but ignored` — so today's
+  "authoritative test score" is usually still a re-run. `SKYDISCOVER_EVAL_MODE`
+  is exported either way.
 - `HarborEvaluator` is **not concurrency-safe** (fixed solution path + fixed
   reward file in a shared container), despite the base docstring.
 - The Python `Evaluator` has **no inner timeout** on the user's `evaluate()`, and
@@ -220,3 +222,5 @@ notes, they are stale:
   silently discarding `db_path` (disabling persistence) and every tuned knob —
   so `-s <strategy>` ran a defaults arm against a tuned one and invalidated any
   A/B comparison.
+- The Python `Evaluator` dropped `mode`, so `test_*` metrics were a re-run of
+  the train evaluation and a held-out split was inexpressible.
