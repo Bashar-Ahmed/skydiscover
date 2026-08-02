@@ -1388,7 +1388,7 @@
     if (!codeEl || !parentEl) return;
 
     document.querySelectorAll('.code-tab').forEach(t => t.classList.remove('active'));
-    if (tab === 'solution') {
+    if (tab === 'solution' || tab === 'code') {
       codeEl.style.display = 'block';
       parentEl.style.display = 'none';
       document.querySelectorAll('.code-tab')[0].classList.add('active');
