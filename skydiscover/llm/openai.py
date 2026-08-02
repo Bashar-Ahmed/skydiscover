@@ -13,6 +13,11 @@ import openai
 
 from skydiscover.config import LLMModelConfig
 from skydiscover.llm.base import LLMInterface, LLMResponse
+from skydiscover.llm.rate_limit import (
+    extract_error_details,
+    get_usage_limit_gate,
+    parse_usage_limit,
+)
 from skydiscover.llm.responses_utils import (
     convert_messages_to_responses_input,
     extract_responses_output,
@@ -40,6 +45,10 @@ _OPENAI_API_PREFIXES = (
     "https://apac.api.openai.com",
 )
 
+# Bound on consecutive usage-limit pauses for a single call, so a quota that
+# never clears cannot wedge a run forever.
+DEFAULT_MAX_USAGE_LIMIT_WAITS = 24
+
 
 def is_openai_reasoning_model(model_name: str, api_base: str) -> bool:
     """Check if a model is an OpenAI reasoning model requiring special parameters."""
@@ -65,6 +74,9 @@ class OpenAILLM(LLMInterface):
         self.api_base = model_cfg.api_base
         self.api_key = model_cfg.api_key
         self.reasoning_effort = getattr(model_cfg, "reasoning_effort", None)
+        self.max_usage_limit_waits = int(
+            getattr(model_cfg, "max_usage_limit_waits", None) or DEFAULT_MAX_USAGE_LIMIT_WAITS
+        )
 
         max_retries = self.retries if self.retries is not None else 0
         is_azure = self.api_base and ".openai.azure.com" in self.api_base.lower()
@@ -165,8 +177,12 @@ class OpenAILLM(LLMInterface):
 
         retries, retry_delay, timeout = self._resolve_retry_options(**kwargs)
         attempt = 0
+        limit_waits = 0
+        gate = get_usage_limit_gate()
 
         while attempt <= retries:
+            # Respect a quota pause another call is already serving.
+            await gate.wait_until_clear()
             try:
                 return await asyncio.wait_for(self._call_api(params), timeout=timeout)
             except asyncio.TimeoutError:
@@ -177,6 +193,15 @@ class OpenAILLM(LLMInterface):
                 else:
                     raise
             except Exception as e:
+                # A usage limit is scheduled downtime, not a failed attempt:
+                # wait it out without consuming the retry budget, otherwise the
+                # run gives up on precisely the condition it should survive.
+                reset_at = self._usage_limit_reset(e)
+                if reset_at is not None and limit_waits < self.max_usage_limit_waits:
+                    limit_waits += 1
+                    await gate.pause_for(reset_at, f"{self.model}: {str(e)[:160]}")
+                    continue
+
                 downgrade_action = self._maybe_downgrade_response_format(params, e)
                 if downgrade_action is not None:
                     logger.warning(
@@ -189,6 +214,12 @@ class OpenAILLM(LLMInterface):
                     await asyncio.sleep(retry_delay)
                 else:
                     raise
+
+    @staticmethod
+    def _usage_limit_reset(error: Exception) -> Optional[float]:
+        """Reset timestamp if *error* is a quota rejection, else None."""
+        details = extract_error_details(error)
+        return parse_usage_limit(details["text"], details["status_code"], details["headers"])
 
     def _error_mentions_response_format(self, error: Exception) -> bool:
         error_text_parts = [str(error)]
@@ -321,8 +352,12 @@ class OpenAILLM(LLMInterface):
             params["max_output_tokens"] = kwargs.get("max_tokens", self.max_tokens)
 
         retries, retry_delay, timeout = self._resolve_retry_options(**kwargs)
+        gate = get_usage_limit_gate()
+        limit_waits = 0
 
-        for attempt in range(retries + 1):
+        attempt = 0
+        while attempt <= retries:
+            await gate.wait_until_clear()
             try:
                 response = await asyncio.wait_for(self._call_responses_api(params), timeout=timeout)
                 text, image_b64, _ = extract_responses_output(response)
@@ -343,14 +378,21 @@ class OpenAILLM(LLMInterface):
                     logger.warning(
                         f"Image timeout attempt {attempt + 1}/{retries + 1}, retrying..."
                     )
+                    attempt += 1
                     await asyncio.sleep(retry_delay)
                 else:
                     raise
             except Exception as e:
+                reset_at = self._usage_limit_reset(e)
+                if reset_at is not None and limit_waits < self.max_usage_limit_waits:
+                    limit_waits += 1
+                    await gate.pause_for(reset_at, f"{self.model}: {str(e)[:160]}")
+                    continue
                 if attempt < retries:
                     logger.warning(
                         f"Image error attempt {attempt + 1}/{retries + 1}: {e}, retrying..."
                     )
+                    attempt += 1
                     await asyncio.sleep(retry_delay)
                 else:
                     raise

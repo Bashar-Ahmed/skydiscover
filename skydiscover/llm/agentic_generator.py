@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from skydiscover.llm.openai import is_openai_reasoning_model
+from skydiscover.llm.rate_limit import (
+    extract_error_details,
+    get_usage_limit_gate,
+    parse_usage_limit,
+)
 from skydiscover.llm.responses_utils import (
     convert_messages_to_responses_input,
     extract_responses_output,
@@ -19,6 +24,9 @@ from skydiscover.llm.responses_utils import (
 from skydiscover.utils.code_utils import build_repo_map
 
 logger = logging.getLogger(__name__)
+
+# Bound on consecutive quota pauses within a single agent step.
+_MAX_USAGE_LIMIT_WAITS = 24
 
 _TOOL_SCHEMAS_PATH = Path(__file__).parent / "tool_schemas" / "agentic_tools.json"
 with open(_TOOL_SCHEMAS_PATH, "r") as _f:
@@ -65,6 +73,14 @@ class AgenticGenerator:
         files_read: set = set()
         conversation: List[Dict[str, Any]] = []
         t0 = time.time()
+        paused_seconds = 0.0
+
+        # Backends that are agents in their own right (the Claude Code CLI) run
+        # their own tool loop; this ReAct loop needs function-calling, which
+        # they cannot participate in.
+        native_model = self._sample_model()
+        if getattr(native_model, "supports_native_agentic", False):
+            return await self._generate_native(native_model, system_message, user_message)
 
         sys_prompt = f"{system_message}\n\n{_AGENTIC_SYSTEM_PROMPT}"
         repo_map = build_repo_map(
@@ -80,7 +96,9 @@ class AgenticGenerator:
         conversation.append({"role": "user", "content": "\n".join(user_parts)})
 
         for step in range(cfg.max_steps):
-            if time.time() - t0 > cfg.overall_timeout:
+            # Time spent parked on an exhausted quota is not the agent's fault
+            # and must not eat its wall-clock budget.
+            if time.time() - t0 - paused_seconds > cfg.overall_timeout:
                 logger.warning("Agent timed out at step %d", step)
                 break
 
@@ -93,10 +111,10 @@ class AgenticGenerator:
                 )
 
             try:
-                assistant_msg = await asyncio.wait_for(
-                    self._call_llm(sys_prompt, conversation),
-                    timeout=cfg.per_step_timeout,
+                assistant_msg, step_paused = await self._call_llm_with_limits(
+                    sys_prompt, conversation, cfg.per_step_timeout
                 )
+                paused_seconds += step_paused
             except asyncio.TimeoutError:
                 logger.warning("Step %d: LLM timed out", step)
                 conversation.append(
@@ -158,6 +176,83 @@ class AgenticGenerator:
         logger.warning("Agent loop ended without producing code")
         return None
 
+    def _sample_model(self):
+        """Sample one backend from the pool.
+
+        Uses the pool's own sampler so temperature-emulated weights apply here
+        too; falls back to raw weights for pool stand-ins that lack it.
+        """
+        sampler = getattr(self.llm_pool, "_sample_model", None)
+        if callable(sampler):
+            return sampler()
+        weights = getattr(self.llm_pool, "effective_weights", None) or self.llm_pool.weights
+        index = self.llm_pool.random_state.choices(
+            range(len(self.llm_pool.models)), weights=weights, k=1
+        )[0]
+        return self.llm_pool.models[index]
+
+    async def _generate_native(self, model, system_message: str, user_message: str):
+        """Delegate the whole agent loop to a backend that has its own."""
+        cfg = self.config
+        logger.info(
+            "Agentic mode: delegating to %s's native agent loop (max_steps=%s)",
+            type(model).__name__,
+            cfg.max_steps,
+        )
+        try:
+            response = await model.generate(
+                system_message,
+                [{"role": "user", "content": user_message}],
+                agentic=True,
+                codebase_root=cfg.codebase_root,
+                max_steps=cfg.max_steps,
+                timeout=cfg.overall_timeout,
+            )
+        except Exception as exc:
+            logger.error("Native agentic generation failed: %s", exc)
+            return None
+        text = (response.text or "").strip()
+        return text or None
+
+    async def _call_llm_with_limits(
+        self,
+        system_message: str,
+        conversation: List[Dict[str, Any]],
+        per_step_timeout: float,
+    ) -> Tuple[Dict[str, Any], float]:
+        """Call the LLM, pausing rather than failing when a quota is exhausted.
+
+        Returns ``(assistant_message, seconds_paused)``.
+
+        The gate wait deliberately sits *outside* ``asyncio.wait_for``: a
+        multi-hour quota pause nested inside a 60-second per-step timeout would
+        simply be cancelled, which would defeat the whole point of waiting. A
+        pause also does not consume the step, for the same reason.
+        """
+        gate = get_usage_limit_gate()
+        paused = 0.0
+        limit_waits = 0
+
+        while True:
+            paused += await gate.wait_until_clear()
+            try:
+                message = await asyncio.wait_for(
+                    self._call_llm(system_message, conversation),
+                    timeout=per_step_timeout,
+                )
+                return message, paused
+            except asyncio.TimeoutError:
+                raise
+            except Exception as exc:
+                details = extract_error_details(exc)
+                reset_at = parse_usage_limit(
+                    details["text"], details["status_code"], details["headers"]
+                )
+                if reset_at is None or limit_waits >= _MAX_USAGE_LIMIT_WAITS:
+                    raise
+                limit_waits += 1
+                paused += await gate.pause_for(reset_at, f"agentic: {str(exc)[:160]}")
+
     async def _call_llm(
         self, system_message: str, conversation: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -166,11 +261,7 @@ class AgenticGenerator:
         Tries Chat Completions first; falls back to Responses API if the
         deployment does not support Chat Completions (common on Azure).
         """
-        model = self.llm_pool.models[
-            self.llm_pool.random_state.choices(
-                range(len(self.llm_pool.models)), weights=self.llm_pool.weights, k=1
-            )[0]
-        ]
+        model = self._sample_model()
 
         if not hasattr(model, "client"):
             raise RuntimeError(
