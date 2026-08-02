@@ -246,7 +246,7 @@ class OpenAILLM(LLMInterface):
         """Translate a Chat-Completions-style *params* dict into a Responses API
         call and return the assistant text."""
         messages = params.get("messages", [])
-        input_items = self._convert_to_responses_input(
+        input_items = convert_messages_to_responses_input(
             [m for m in messages if m.get("role") != "system"]
         )
         system_msg = next((m["content"] for m in messages if m.get("role") == "system"), None)
@@ -269,7 +269,7 @@ class OpenAILLM(LLMInterface):
         response = await loop.run_in_executor(
             None, lambda: self.client.responses.create(**resp_params)
         )
-        text, _ = self._extract_responses_output(response)
+        text, _, _ = extract_responses_output(response)
         return text or ""
 
     def _resolve_retry_options(self, **kwargs) -> Tuple[int, int, int]:
