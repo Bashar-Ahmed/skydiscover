@@ -15,6 +15,12 @@ Things that will cost you an afternoon if you don't know them.
 - `max_parallel_iterations` is read **only by the base controller** — it is inert
   for adaevolve, evox, gepa_native, and claude_code. It is documented nowhere.
 - `random_seed: 42` at the top level of four shipped configs does nothing.
+- `--search` / `apply_overrides(search=...)` swaps the DatabaseConfig class.
+  Shared base fields (`db_path`, `log_prompts`) and untyped extras carry over;
+  a field the **previous** class declared does not, because strategies reuse
+  names like `population_size` and `num_islands` with different meanings. So
+  `-s adaevolve` on a config written for `gepa_native` keeps your `db_path` but
+  resets `population_size` to the adaevolve default — by design.
 - `configs/README.md` documents five keys that raise `TypeError`:
   `evaluator.use_llm_feedback`, `evaluator.llm_feedback_weight`,
   `llm.random_seed`, `llm.primary_model`, `llm.primary_model_weight`.
@@ -210,3 +216,7 @@ notes, they are stale:
 - GEPA reset its merge budget and tried-pairs set on every resume.
 - `scripts/reproduce/*.sh` hardcoded `evaluator.py`, used wrong ADRS dataset
   paths, and reported success unconditionally via a bare `wait`.
+- `apply_overrides(search=...)` rebuilt the database config from scratch,
+  silently discarding `db_path` (disabling persistence) and every tuned knob —
+  so `-s <strategy>` ran a defaults arm against a tuned one and invalidated any
+  A/B comparison.

@@ -963,6 +963,38 @@ def build_output_dir(search_type: str, initial_program_path: str, base_dir: str 
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _rebuild_database_config(prev_db: DatabaseConfig, new_db_cls: type) -> DatabaseConfig:
+    """Swap the database config class while preserving the user's settings.
+
+    ``--search`` changes which DatabaseConfig subclass is in play, but the values
+    the user wrote in YAML were parsed against whatever ``search.type`` the file
+    declared. Constructing the new class bare would silently discard all of them —
+    including ``db_path``, which turns a resumable run into a throwaway one.
+
+    Two categories carry over:
+
+    * fields of the shared ``DatabaseConfig`` base (``db_path``, ``log_prompts``) —
+      they mean the same thing to every strategy;
+    * loose extras that ``from_dict`` ``setattr``'d because they were not fields of
+      the *previous* class (see the ``db_extras`` branch there) — these were never
+      claimed by the old algorithm, so they are almost always keys meant for the
+      one being selected now.
+
+    A field that the previous class *declared* is deliberately dropped: strategies
+    reuse names (``adaevolve`` and ``openevolve_native`` both have ``num_islands``
+    and ``population_size``) with different scales and meanings, so carrying a
+    value tuned for one over to another trades a visible reset for a silent
+    misconfiguration.
+    """
+    new_db = new_db_cls()
+    base_fields = {f.name for f in fields(DatabaseConfig)}
+    prev_cls_fields = {f.name for f in fields(type(prev_db))}
+    for key, value in vars(prev_db).items():
+        if key in base_fields or key not in prev_cls_fields:
+            setattr(new_db, key, value)
+    return new_db
+
+
 def apply_overrides(
     config: Config,
     *,
@@ -1057,7 +1089,7 @@ def apply_overrides(
         config.search.type = search
         new_db_cls = _DB_CONFIG_BY_TYPE.get(search)
         if new_db_cls and not isinstance(config.search.database, new_db_cls):
-            config.search.database = new_db_cls()
+            config.search.database = _rebuild_database_config(config.search.database, new_db_cls)
 
     if system_prompt:
         config.context_builder.system_message = system_prompt
