@@ -234,6 +234,10 @@ class GEPANativeDatabase(ProgramDatabase):
                 k: list(v) for k, v in self.program_at_metric_front.items()
             },
             "rejection_history": [prog.to_dict() for prog in self.rejection_history],
+            # Controller-owned search state. The controller is rebuilt from
+            # scratch on resume, so without persisting these a resumed run would
+            # get a fresh merge budget and re-try already-tried pairs.
+            "controller_state": self._controller_state_to_dict(),
         }
         os.makedirs(save_path, exist_ok=True)
 
@@ -278,6 +282,38 @@ class GEPANativeDatabase(ProgramDatabase):
                 self.rejection_history.append(Program.from_dict(prog_dict))
             except Exception as e:
                 logger.warning(f"Failed to load rejected program from history: {e}")
+
+        # Restore controller-owned search state (merge budget, stagnation counters)
+        self._controller_state_from_dict(metadata.get("controller_state") or {})
+
+    # ------------------------------------------------------------------
+    # Controller state — stored here so it survives checkpoint/resume
+    # ------------------------------------------------------------------
+
+    def _controller_state_to_dict(self) -> Dict[str, Any]:
+        best_seen = getattr(self, "_best_score_seen", None)
+        # -inf is not valid JSON; round-trip it as null (see _from_dict).
+        if best_seen == -float("inf"):
+            best_seen = None
+        return {
+            "best_score_seen": best_seen,
+            "iterations_without_improvement": getattr(self, "_iterations_without_improvement", 0),
+            "merge_due": getattr(self, "_merge_due", False),
+            "merge_attempts_used": getattr(self, "_merge_attempts_used", 0),
+            "merge_pairs_tried": [list(pair) for pair in getattr(self, "_merge_pairs_tried", ())],
+        }
+
+    def _controller_state_from_dict(self, state: Dict[str, Any]) -> None:
+        if not state:
+            return
+        best_seen = state.get("best_score_seen")
+        self._best_score_seen = -float("inf") if best_seen is None else float(best_seen)
+        self._iterations_without_improvement = int(state.get("iterations_without_improvement", 0))
+        self._merge_due = bool(state.get("merge_due", False))
+        self._merge_attempts_used = int(state.get("merge_attempts_used", 0))
+        self._merge_pairs_tried = {
+            (pair[0], pair[1]) for pair in state.get("merge_pairs_tried", []) if len(pair) == 2
+        }
 
     def _rebuild_elite_pool(self) -> None:
         """Rebuild elite pool and metric_best from loaded programs."""

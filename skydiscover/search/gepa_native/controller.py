@@ -64,14 +64,21 @@ class GEPANativeController(DiscoveryController):
         self.max_recent_failures: int = getattr(db_config, "max_recent_failures", 5)
         self.max_merge_attempts: int = getattr(db_config, "max_merge_attempts", 10)
 
-        # Stagnation tracking
-        self._best_score_seen: float = -float("inf")
-        self._iterations_without_improvement: int = 0
-
-        # Merge state
-        self._merge_due: bool = False
-        self._merge_attempts_used: int = 0
-        self._merge_pairs_tried: Set[Tuple[str, str]] = set()
+        # Stagnation + merge state live on the database rather than on self.
+        # The controller is constructed fresh on every resume, so keeping this
+        # state here would hand a resumed run a brand-new merge budget and let
+        # it re-try pairs it had already merged. The database persists it via
+        # gepa_metadata.json. Seed defaults only when absent, so a checkpoint
+        # loaded either before or after this constructor wins.
+        for _attr, _default in (
+            ("_best_score_seen", -float("inf")),
+            ("_iterations_without_improvement", 0),
+            ("_merge_due", False),
+            ("_merge_attempts_used", 0),
+            ("_merge_pairs_tried", set()),
+        ):
+            if not hasattr(self.database, _attr):
+                setattr(self.database, _attr, _default)
 
         logger.info(
             f"GEPANativeController initialized: "
@@ -80,6 +87,50 @@ class GEPANativeController(DiscoveryController):
             f"merge_after_stagnation={self.merge_after_stagnation}, "
             f"max_merge_attempts={self.max_merge_attempts}"
         )
+
+    # ------------------------------------------------------------------
+    # Persistent search state (backed by the database, see __init__)
+    # ------------------------------------------------------------------
+
+    @property
+    def _best_score_seen(self) -> float:
+        return self.database._best_score_seen
+
+    @_best_score_seen.setter
+    def _best_score_seen(self, value: float) -> None:
+        self.database._best_score_seen = value
+
+    @property
+    def _iterations_without_improvement(self) -> int:
+        return self.database._iterations_without_improvement
+
+    @_iterations_without_improvement.setter
+    def _iterations_without_improvement(self, value: int) -> None:
+        self.database._iterations_without_improvement = value
+
+    @property
+    def _merge_due(self) -> bool:
+        return self.database._merge_due
+
+    @_merge_due.setter
+    def _merge_due(self, value: bool) -> None:
+        self.database._merge_due = value
+
+    @property
+    def _merge_attempts_used(self) -> int:
+        return self.database._merge_attempts_used
+
+    @_merge_attempts_used.setter
+    def _merge_attempts_used(self, value: int) -> None:
+        self.database._merge_attempts_used = value
+
+    @property
+    def _merge_pairs_tried(self) -> Set[Tuple[str, str]]:
+        return self.database._merge_pairs_tried
+
+    @_merge_pairs_tried.setter
+    def _merge_pairs_tried(self, value: Set[Tuple[str, str]]) -> None:
+        self.database._merge_pairs_tried = value
 
     # ------------------------------------------------------------------
     # Main discovery loop
