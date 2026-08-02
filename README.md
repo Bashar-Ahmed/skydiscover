@@ -326,6 +326,7 @@ Any [LiteLLM](https://docs.litellm.ai/)-compatible model works using `provider/m
 --model gemini/gemini-3-pro-preview                          # Gemini
 --model anthropic/claude-sonnet-4-20250514                   # Anthropic
 --model ollama/llama3 --api-base http://localhost:11434/v1   # Local (Ollama, vLLM, etc.)
+--model claude_cli/sonnet                                    # Claude subscription via Claude Code CLI
 ```
 
 Multi-model pools with weighted sampling are supported in config:
@@ -338,6 +339,55 @@ llm:
     - name: "gemini/gemini-2.0-flash"
       weight: 0.3
 ```
+
+</details>
+
+<details id="claude-subscription">
+<summary><b>Using a Claude subscription (no API key)</b></summary>
+
+The `claude_cli/` provider drives the locally installed [Claude Code](https://claude.com/claude-code) CLI (`claude -p`) instead of a metered HTTP API, so a Pro/Max plan can be used for discovery runs. Nothing is containerized — the binary runs directly on the same machine, once per LLM call.
+
+```bash
+# One-time setup
+npm i -g @anthropic-ai/claude-code   # or the native installer
+claude auth                          # subscription login; no ANTHROPIC_API_KEY needed
+
+uv run skydiscover-run initial_program.py evaluator.py \
+  -c configs/claude_cli.yaml --search adaevolve -i 100
+
+# or without a config file
+uv run skydiscover-run initial_program.py evaluator.py -m claude_cli/sonnet -i 100
+```
+
+Model names may be aliases (`opus`, `sonnet`, `haiku`, `fable`) or full ids (`claude_cli/claude-sonnet-4-6`). The CLI is invoked as a pure text generator: all built-in tools are disabled, the agent loop is capped at one turn, and ambient settings/MCP/CLAUDE.md discovery are switched off so a run is reproducible.
+
+**Usage limits are waited out, not skipped.** When the plan's quota is exhausted, SkyDiscover parses the reset time from the rejection (the CLI's `usage limit reached|<epoch>` marker, a `retry-after` header, or a phrase like "resets at 3pm"), pauses *every* LLM call in the process until it passes, then resumes the same iteration. A quota pause does not consume the retry budget, so a run that crosses a five-hour window survives it instead of losing its remaining iterations. See `skydiscover/llm/rate_limit.py`.
+
+**Temperature is emulated.** Sampling parameters were removed starting with Claude Opus 4.7 — they are rejected with a 400 on Opus 4.7/4.8, Opus 5, Sonnet 5, Fable 5 and Mythos 5, while Opus 4.6, Sonnet 4.6 and the 4.5 family still accept them — and the CLI exposes no sampling knob at all. The configured `llm.temperature` is therefore applied through two substitutes:
+
+| Lever | Mechanism | `T = 0` | `T = 1` | `T = 2` |
+|:--|:--|:--|:--|:--|
+| Model choice | pool weights reshaped as `p_i ∝ w_i^(1/T)` | always the top-weighted model | configured weights exactly | flattened towards uniform |
+| Reasoning effort | discrete Gaussian over `[low … max]` centred on `base_effort`, `σ = T × effort_spread` | pinned to `base_effort` | ±1 rung | spread across the ladder |
+
+```yaml
+llm:
+  models:
+    - name: "claude_cli/sonnet"
+      weight: 0.7
+    - name: "claude_cli/opus"
+      weight: 0.3
+  temperature: 0.7
+  temperature_emulation:
+    enabled: auto          # auto | true | false — "auto" activates only when the
+                           # pooled models cannot accept a real temperature
+    base_effort: "medium"
+    effort_spread: 1.0
+```
+
+Under the default `enabled: auto` this is inert for OpenAI/Gemini models, so switching back requires no config change. See [`configs/claude_cli.yaml`](configs/claude_cli.yaml) for the fully annotated template and `skydiscover/llm/temperature.py` for the implementation.
+
+> This is separate from `--search claude_code`, which runs Claude Code as a *single-agent baseline* in Docker. `claude_cli/` is an LLM backend usable by every search strategy.
 
 </details>
 

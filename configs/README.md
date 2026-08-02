@@ -14,6 +14,7 @@ All settings are YAML. Environment variables can be referenced with `${VAR}` syn
 | **openevolve_native.yaml** | OpenEvolve Native | Native port of OpenEvolve's island-based MAP-Elites search with ring migration |
 | **llm_judge.yaml** | - | Demonstrates LLM-as-a-judge evaluation (uses gpt-4o-mini for both generation and judging) |
 | **human_in_the_loop.yaml** | Top-K | Enables the live monitor dashboard and human-in-the-loop feedback |
+| **claude_cli.yaml** | AdaEvolve | Runs against a Claude Pro/Max subscription through the local Claude Code CLI (no API key), with usage-limit waiting and temperature emulation |
 
 Each file is a ready-to-copy template. Fill in the **system_message** with your problem description and you're good to go.
 
@@ -60,6 +61,43 @@ llm:
 | DeepSeek | `deepseek-chat` or `deepseek/deepseek-chat` | DEEPSEEK_API_KEY |
 | Mistral | `mistral-large` or `mistral/mistral-large` | MISTRAL_API_KEY |
 | Ollama / vLLM | `ollama/llama3`, `vllm/my-model` | — |
+| Claude Code CLI | `claude_cli/sonnet`, `claude_cli/claude-opus-4-8` | — (uses `claude auth`) |
+
+### Claude Code CLI backend (`claude_cli/`)
+
+Drives the local `claude` binary in print mode instead of an HTTP API, so a Claude Pro/Max **subscription** can back a run. Requires Claude Code installed and `claude auth` completed once; no API key is read. See [`claude_cli.yaml`](claude_cli.yaml).
+
+```yaml
+llm:
+  models:
+    - name: "claude_cli/sonnet"
+      weight: 1.0
+      # Optional, all specific to this backend:
+      # cli_binary: "/path/to/claude"    # default: `claude` on PATH / $SKYDISCOVER_CLAUDE_BINARY
+      # fallback_model: "haiku"          # used when the primary is overloaded
+      # max_budget_usd: 25               # hard spend ceiling passed to the CLI
+      # max_usage_limit_waits: 24        # consecutive quota pauses before giving up
+      # cli_extra_args: ["--verbose"]    # appended verbatim to every invocation
+```
+
+**Usage limits.** Any provider rejection that names an exhausted quota (`429`, `usage limit reached|<epoch>`, `retry-after`, "resets at 3pm", weekly/5-hour limits) pauses every LLM call in the process until the reset instant, then resumes the same iteration. The pause does not consume `retries`. This applies to the OpenAI-compatible backend too, not just the CLI.
+
+**`temperature_emulation`.** Sampling parameters are rejected on Claude Opus 4.7 and later, Sonnet 5, Fable 5 and Mythos 5 (Opus 4.6, Sonnet 4.6 and the 4.5 family still accept them), and the Claude Code CLI has no sampling knob at all. On those models `llm.temperature` is applied by reshaping model-pool weights (`p_i ∝ w_i^(1/T)`) and jittering reasoning effort over a ladder (`σ = T × effort_spread`).
+
+```yaml
+llm:
+  temperature: 0.7
+  temperature_emulation:
+    enabled: auto                                     # auto | true | false
+    vary_model: true                                  # reshape pool weights by T
+    vary_effort: true                                 # jitter reasoning effort by T
+    effort_ladder: ["low", "medium", "high", "xhigh", "max"]
+    base_effort: "medium"                             # centre of the effort distribution
+    effort_spread: 1.0                                # ladder steps per unit of temperature
+    max_temperature: 2.0
+```
+
+`enabled: auto` (the default) turns emulation on only when a pooled model cannot accept a real temperature, so it is inert for OpenAI/Gemini runs. At `T = 1` with a single-model pool and `vary_effort: false` the behaviour is identical to not using it at all.
 
 <details>
 <summary><b>Single model, multi-model pool, separate pools, and API override examples</b></summary>
