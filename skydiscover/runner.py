@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import os
@@ -48,6 +49,10 @@ class Runner:
     ):
         self.config = config if config is not None else load_config(config_path)
         self.name = self.config.search.type
+        # Deep copy of the best program carrying test_* metrics, set only after a
+        # successful test-mode re-evaluation. Kept separate from the database's
+        # own object so checkpoint and reported scores stay consistent.
+        self._best_program_with_test: Optional[Program] = None
         self.output_dir = output_dir or build_output_dir(
             self.name, initial_program_path or "scratch"
         )
@@ -187,16 +192,36 @@ class Runner:
             best = self._get_best_program()
             if best:
                 try:
+                    # In image mode the evaluator scores the rendered image, not
+                    # the model's prose. Mirror the eval_input selection the
+                    # discovery loop uses, otherwise the re-evaluation scores the
+                    # description text and always returns zero.
+                    test_input = best.solution
+                    if self.config.language == "image":
+                        image_path = (best.metadata or {}).get("image_path")
+                        if not image_path:
+                            raise ValueError(
+                                "best program has no image_path; cannot re-evaluate in test mode"
+                            )
+                        test_input = image_path
+
                     test_result = await self.discovery_controller.evaluator.evaluate_program(
-                        best.solution, best.id, mode="test"
+                        test_input, best.id, mode="test"
                     )
-                    for k, v in test_result.metrics.items():
-                        best.metrics[f"test_{k}"] = v
                     logger.info(
                         f"Test evaluation for best program: {format_metrics(test_result.metrics)}"
                     )
-                    # Persist test metrics to disk so they survive the run.
-                    self._save_best_program(best)
+                    # Persist test metrics to disk without mutating the program
+                    # still held by the database: the final checkpoint has
+                    # already been written, and folding test_* keys into
+                    # program.metrics would change get_score() (which averages
+                    # numeric metrics when combined_score is absent) and make
+                    # the reported best_score disagree with the checkpoint.
+                    best_with_test = copy.deepcopy(best)
+                    for k, v in test_result.metrics.items():
+                        best_with_test.metrics[f"test_{k}"] = v
+                    self._best_program_with_test = best_with_test
+                    self._save_best_program(best_with_test)
                 except Exception as e:
                     logger.warning(f"Test-mode re-evaluation failed: {e}")
 
@@ -224,7 +249,15 @@ class Runner:
         if best_program:
             status = "early stopping" if early_stopped else "completed"
             logger.info(f"Discovery {status}. Best: {format_metrics(best_program.metrics)}")
-            self._save_best_program(best_program)
+            # Prefer the test-augmented copy so this final save does not drop the
+            # test_* metrics written above. The returned program stays the
+            # database's own object, whose score matches the final checkpoint.
+            augmented = self._best_program_with_test
+            self._save_best_program(
+                augmented
+                if augmented is not None and augmented.id == best_program.id
+                else best_program
+            )
             return best_program
 
         logger.warning("No valid programs found")
