@@ -55,13 +55,23 @@ Things that will cost you an afternoon if you don't know them.
   `start_iteration = last_iteration + 1`; the implicit load inside
   `ProgramDatabase.__init__` from `config.search.database.db_path` yields
   `last_iteration` with **no `+1`**.
+- **The final checkpoint is written twice** whenever the last iteration lands on
+  an interval boundary — i.e. *always*, with `checkpoint_interval: 1`. The
+  interval trigger in `_process_iteration_result` fires for iteration N, then
+  `Runner.run` unconditionally re-saves `final_iteration = discovery_start +
+  max_iterations - 1` (`runner.py:187-189`). Same directory, same content,
+  written twice. Harmless but doubles the largest snapshot's write cost.
 - `CheckpointManager.load` always rebuilds with base `Program.from_dict`,
   ignoring `db._program_class`, and `from_dict` drops unknown keys with only a
   `logger.debug`. Saves are full snapshots — O(programs × checkpoints) disk.
 - `api.py::run_discovery` has **no `checkpoint` parameter**, and `cleanup=True`
   (the default) deletes the temp output dir containing the checkpoints. Resume
   is CLI-only.
-- **Resume is completely untested** — nothing in `tests/` touches it.
+- **Resume is effectively untested.** Nothing in `tests/` touches
+  `CheckpointManager.load`, `Runner._load_checkpoint`, or `db_path`. The one
+  checkpoint test, `tests/cli/test_checkpoint_discovery.py`, covers only
+  `cli.py::_find_latest_checkpoint` — the helper that picks the
+  highest-numbered `checkpoint_<n>` dir — not the restore path itself.
 - `registry.py::register_program` is never called; `_PROGRAM_REGISTRY` is
   permanently empty.
 
@@ -125,7 +135,9 @@ Things that will cost you an afternoon if you don't know them.
 
 ## Testing and CI
 
-- Run: `uv run python -m pytest tests/ -q -m "not integration"`.
+- Run: `uv sync --extra dev` (pytest lives in the `dev` extra; a plain `uv sync`
+  leaves you with "No module named pytest"), then
+  `uv run python -m pytest tests/ -q -m "not integration"`.
 - CI is three jobs: `lint` (black + isort, **scoped to `skydiscover/` only** —
   `tests/`, `benchmarks/`, `examples/`, `scripts/` are unlinted), `test`, `build`
   (`uv build`, publishes nothing). Single Python 3.10, no matrix.
@@ -167,8 +179,12 @@ Things that will cost you an afternoon if you don't know them.
 
 - `register_program` / `_PROGRAM_REGISTRY` — never called.
 - `ClaudeCodeConfig.max_turns` — never read (the controller uses `max_iterations`).
-- `evaluate_batch` / `TaskPool` — **zero call sites**, so
-  `max_parallel_iterations`' second effect (evaluator `max_concurrent`) does nothing.
+- `Evaluator.evaluate_batch` / `ContainerizedEvaluator.evaluate_batch` — **zero
+  call sites**. `TaskPool` *is* constructed by both evaluators (`evaluator.py:49`,
+  `container_evaluator.py:81`) but is only ever driven from inside those dead
+  methods, so `max_parallel_iterations`' second effect (evaluator
+  `max_concurrent`) does nothing. (Unrelated: the module-level `evaluate_batch`
+  in `evox/database/search_strategy_evaluator.py` *is* live.)
 - `cascade_thresholds[1]` — never read.
 - AdaEvolve: `stagnation_threshold`, `stagnation_multi_child_count`,
   `sibling_context_limit`, `archive_size` are dead config keys;

@@ -89,7 +89,7 @@ wrapper accepting inline strings and callables.
 **Using a Claude subscription instead of an API key:**
 
 ```bash
-claude auth                                          # once
+claude auth login                                    # once (bare `claude auth` only prints help)
 uv run skydiscover-run prog.py evaluator.py -c configs/claude_cli.yaml
 # or:  -m claude_cli/sonnet
 ```
@@ -145,7 +145,8 @@ iteration — see `references/gotchas.md`.
   `skydiscover/` only**, then `pytest tests/`. `mypy` is configured strictly in
   `pyproject.toml` and **never run**. Run `uv run black skydiscover/ && uv run
   isort skydiscover/` before pushing.
-- **Tests:** `uv run python -m pytest tests/ -q -m "not integration"`.
+- **Tests:** `uv sync --extra dev` first — plain `uv sync` does **not** install
+  pytest. Then `uv run python -m pytest tests/ -q -m "not integration"`.
   Integration tests hit real services and consume quota, and **nothing deselects
   them automatically** — `addopts` is only `--strict-markers` and there is no
   `conftest.py`, so you must pass `-m "not integration"` yourself. CI does not.
