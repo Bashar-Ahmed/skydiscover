@@ -44,6 +44,11 @@ _PROVIDERS: Dict[str, tuple] = {
 # api_base, and resolving an API key for them would be misleading.
 _LOCAL_PROVIDERS = {"claude_cli", "claude-cli"}
 
+# Default model when a config names none.  Pinned to Opus 5 by full name rather
+# than the floating "opus" alias so a run is reproducible.  Driven by the local
+# `claude` binary, so it needs `claude auth login` but no API key.
+DEFAULT_MODEL = "claude_cli/claude-opus-5"
+
 
 def is_local_provider(provider: Optional[str]) -> bool:
     """Whether *provider* is driven by a local binary instead of an HTTP API."""
@@ -200,7 +205,9 @@ class LLMConfig(LLMModelConfig):
     retry_delay: int = 5
 
     # model(s) for solution discovery
-    models: List[LLMModelConfig] = field(default_factory=list)
+    models: List[LLMModelConfig] = field(
+        default_factory=lambda: [LLMModelConfig(name=DEFAULT_MODEL)]
+    )
 
     # model(s) for evaluator
     evaluator_models: List[LLMModelConfig] = field(default_factory=lambda: [])
@@ -599,15 +606,18 @@ class SearchConfig:
 class MonitorConfig:
     """Configuration for the live run monitor dashboard"""
 
-    enabled: bool = False
+    enabled: bool = True
     port: int = 8765
     host: str = "127.0.0.1"
     max_solution_length: int = 10000
 
-    # AI summary settings
-    summary_model: str = "gpt-5-mini"
-    summary_api_key: Optional[str] = None  # Falls back to OPENAI_API_KEY
-    summary_api_base: str = _PROVIDERS["openai"][0]
+    # AI summary settings.  A "claude_cli/" model runs on the local `claude`
+    # binary and needs no API key; anything else is called over an
+    # OpenAI-compatible HTTP endpoint and does.  Keep in sync with
+    # extras/monitor/server.py::DEFAULT_SUMMARY_MODEL.
+    summary_model: str = "claude_cli/claude-sonnet-5"
+    summary_api_key: Optional[str] = None  # Falls back to OPENAI_API_KEY (HTTP models only)
+    summary_api_base: str = _PROVIDERS["openai"][0]  # unused for claude_cli models
     summary_top_k: int = 3
     summary_interval: int = 0  # Auto-generate every N programs (0 = manual)
 
@@ -648,7 +658,7 @@ class Config:
 
     # General settings
     max_iterations: int = 100
-    checkpoint_interval: int = 10
+    checkpoint_interval: int = 1
     log_level: str = "INFO"
     log_dir: Optional[str] = None
     language: Optional[str] = None
@@ -666,7 +676,7 @@ class Config:
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
 
     # Human feedback settings
-    human_feedback_enabled: bool = False
+    human_feedback_enabled: bool = True
     human_feedback_file: Optional[str] = None
     human_feedback_mode: str = "append"  # "append" or "replace"
 

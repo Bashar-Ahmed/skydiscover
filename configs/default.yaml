@@ -1,13 +1,15 @@
 # General settings
 max_iterations: 100
-checkpoint_interval: 10
+checkpoint_interval: 1
 log_level: "INFO"
 random_seed: 42
 
 # LLM configuration
 llm:
   models:
-    - name: "gpt-5"
+    # Driven by the local `claude` binary: needs `claude auth login`, no API key.
+    # Pinned by full name rather than the floating "opus" alias for reproducibility.
+    - name: "claude_cli/claude-opus-5"
       weight: 1.0
   temperature: 0.7
   # top_p: 0.95  # omitted by default; some providers (e.g. Anthropic) reject both temperature and top_p
@@ -32,6 +34,21 @@ evaluator:
   timeout: 10000
   max_retries: 3
   cascade_evaluation: false
+
+# Live monitor dashboard
+monitor:
+  enabled: true
+  port: 8765
+  host: "127.0.0.1"
+  # Dashboard AI summaries. A "claude_cli/" model runs on the local claude
+  # binary, so summaries need no API key. Use e.g. "gpt-5-mini" (with
+  # OPENAI_API_KEY) to route them over HTTP instead.
+  summary_model: "claude_cli/claude-sonnet-5"
+  summary_interval: 0   # 0 = manual refresh only
+
+# Human feedback (the monitor enables the feedback reader regardless; this makes
+# it explicit and is what routes feedback into the prompt)
+human_feedback_enabled: true
 
 # Generation settings
 diff_based_generation: true
