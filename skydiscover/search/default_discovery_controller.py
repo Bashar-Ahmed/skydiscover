@@ -25,7 +25,7 @@ from skydiscover.llm.llm_pool import LLMPool
 from skydiscover.search.base_database import Program, ProgramDatabase
 from skydiscover.search.utils.discovery_utils import SerializableResult, build_image_content
 from skydiscover.utils.code_utils import (
-    apply_diff,
+    apply_diff_detailed,
     extract_diffs,
     format_diff_summary,
     parse_full_rewrite,
@@ -806,12 +806,15 @@ class DiscoveryController:
                 )
                 return None, None, "No valid diffs found in response"
 
-            child_solution = apply_diff(parent_solution, llm_response)
+            child_solution, applied, total = apply_diff_detailed(parent_solution, llm_response)
             changes_summary = format_diff_summary(diff_blocks)
 
-            if child_solution == parent_solution:
+            if applied == 0 or child_solution == parent_solution:
                 logger.warning(
-                    "Diff blocks found but none matched parent solution (iteration=%s, attempt %s/%s).",
+                    "Diff blocks found but %s/%s matched parent solution "
+                    "(iteration=%s, attempt %s/%s).",
+                    applied,
+                    total,
                     iteration,
                     attempt,
                     retry_times,
@@ -819,7 +822,19 @@ class DiscoveryController:
                 return (
                     None,
                     None,
-                    "Diff SEARCH blocks did not match parent solution - no changes applied",
+                    f"Diff SEARCH blocks did not match parent solution "
+                    f"({applied}/{total} applied) - no changes applied",
+                )
+
+            if applied < total:
+                logger.warning(
+                    "Only %s/%s diff blocks matched the parent solution "
+                    "(iteration=%s, attempt %s/%s); applying the ones that did.",
+                    applied,
+                    total,
+                    iteration,
+                    attempt,
+                    retry_times,
                 )
 
             return child_solution, changes_summary, None

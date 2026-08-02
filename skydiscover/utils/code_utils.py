@@ -2,12 +2,38 @@
 Utilities for code parsing, diffing, and manipulation
 """
 
+import logging
 import os
 import re
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+logger = logging.getLogger(__name__)
+
 _MAX_COMMENT_LINES = 5
+
+# Languages for which a bare, unfenced LLM response is a legitimate solution
+# (prompt optimization evolves plain text; image mode carries a prose payload).
+_PROSE_FALLBACK_LANGUAGES = {
+    "text",
+    "text/plain",
+    "prompt",
+    "markdown",
+    "md",
+    "image",
+    "",
+}
+
+# Line-level signatures that indicate a response contains source code rather
+# than conversational prose. Deliberately broad — this only has to separate
+# "here is my code" from "I cannot help with that".
+_CODE_LINE_PATTERN = re.compile(
+    r"^\s*(?:def |class |import |from \w+ import|return\b|if\b|for\b|while\b|"
+    r"#include|using namespace|template\s*<|struct |enum |fn |function |"
+    r"const |let |var |public |private |protected |static |void |int |float |"
+    r"double |auto |bool |char |unsigned |size_t |@|\}|\{)",
+    re.MULTILINE,
+)
 
 
 def apply_diff(original_solution: str, diff_text: str) -> str:
@@ -21,6 +47,26 @@ def apply_diff(original_solution: str, diff_text: str) -> str:
     Returns:
         Modified solution
     """
+    result, _, _ = apply_diff_detailed(original_solution, diff_text)
+    return result
+
+
+def apply_diff_detailed(original_solution: str, diff_text: str) -> Tuple[str, int, int]:
+    """
+    Apply a SEARCH/REPLACE diff and report how many blocks actually matched.
+
+    Blocks whose SEARCH text is not found in *original_solution* are skipped.
+    Callers can use the returned counts to distinguish "the model made no
+    change" from "the model's SEARCH blocks were wrong", which otherwise look
+    identical because both leave the solution untouched.
+
+    Args:
+        original_solution: Original source solution
+        diff_text: Diff in the SEARCH/REPLACE format
+
+    Returns:
+        Tuple of (modified_solution, applied_block_count, total_block_count)
+    """
     # Split into lines for easier processing
     original_lines = original_solution.split("\n")
     result_lines = original_lines.copy()
@@ -28,19 +74,32 @@ def apply_diff(original_solution: str, diff_text: str) -> str:
     # Extract diff blocks
     diff_blocks = extract_diffs(diff_text)
 
+    applied = 0
+
     # Apply each diff block
     for search_text, replace_text in diff_blocks:
         search_lines = search_text.split("\n")
         replace_lines = replace_text.split("\n")
 
+        matched = False
         # Find where the search pattern starts in the original solution
         for i in range(len(result_lines) - len(search_lines) + 1):
             if result_lines[i : i + len(search_lines)] == search_lines:
                 # Replace the matched section
                 result_lines[i : i + len(search_lines)] = replace_lines
+                matched = True
+                applied += 1
                 break
 
-    return "\n".join(result_lines)
+        if not matched:
+            preview = search_lines[0][:120] if search_lines else ""
+            logger.warning(
+                "Diff SEARCH block did not match the parent solution; skipping it. "
+                "First line: %r",
+                preview,
+            )
+
+    return "\n".join(result_lines), applied, len(diff_blocks)
 
 
 def extract_diffs(diff_text: str) -> List[Tuple[str, str]]:
@@ -58,18 +117,59 @@ def extract_diffs(diff_text: str) -> List[Tuple[str, str]]:
     return [(match[0].rstrip(), match[1].rstrip()) for match in diff_blocks]
 
 
-def parse_full_rewrite(llm_response: str, language: str = "python") -> Optional[str]:
+def _looks_like_code(text: str) -> bool:
+    """Heuristic: does *text* contain source code rather than plain prose?
+
+    Used only as a guard on the unfenced fallback in parse_full_rewrite, so it
+    errs towards accepting: a single code-like line is enough.
+    """
+    return bool(_CODE_LINE_PATTERN.search(text))
+
+
+def _strip_fence_language_tag(block: str, language: str) -> str:
+    """Drop a leading bare language tag from a generic ``` ... ``` capture.
+
+    The generic fallback pattern matches the whole fence body including the
+    info string, so a ```cpp fence read under language="python" would otherwise
+    yield code beginning with the literal line "cpp".
+    """
+    head, sep, tail = block.partition("\n")
+    if not sep:
+        return block
+    tag = head.strip()
+    # An info string is a short single token: no spaces, no punctuation that
+    # would appear in real code at the top of a solution.
+    if tag and len(tag) <= 20 and re.fullmatch(r"[A-Za-z0-9_+#.\-]+", tag):
+        if tag.lower() != (language or "").lower():
+            logger.debug("Stripping code fence info string %r from full rewrite", tag)
+        return tail
+    return block
+
+
+def parse_full_rewrite(
+    llm_response: str,
+    language: str = "python",
+    allow_prose_fallback: Optional[bool] = None,
+) -> Optional[str]:
     """
     Extract a full rewrite from an LLM response
 
     Args:
         llm_response: Response from the LLM
         language: Programming language
+        allow_prose_fallback: Whether an unfenced response may be returned
+            verbatim. Defaults to True for text-like languages (prompt
+            optimization, image mode) and False for code languages, where a
+            prose reply such as "I can't do that" must not be stored as a
+            program. Pass explicitly to override.
 
     Returns:
         Extracted code or None if not found
     """
-    solution_block_pattern = r"```" + language + r"\n(.*?)```"
+    if llm_response is None:
+        return None
+
+    solution_block_pattern = r"```" + re.escape(language) + r"\n(.*?)```"
     matches = re.findall(solution_block_pattern, llm_response, re.DOTALL)
 
     if matches:
@@ -80,10 +180,26 @@ def parse_full_rewrite(llm_response: str, language: str = "python") -> Optional[
     matches = re.findall(solution_block_pattern, llm_response, re.DOTALL)
 
     if matches:
-        return matches[0].strip()
+        return _strip_fence_language_tag(matches[0], language).strip()
 
     # Fallback to plain text
-    return llm_response
+    if allow_prose_fallback is None:
+        allow_prose_fallback = (language or "").lower() in _PROSE_FALLBACK_LANGUAGES
+
+    if allow_prose_fallback:
+        return llm_response
+
+    if _looks_like_code(llm_response):
+        return llm_response.strip()
+
+    preview = llm_response[:200].replace("\n", " ")
+    logger.warning(
+        "LLM response for language=%r contained no code fence and does not look "
+        "like code; rejecting it instead of storing prose as a solution. Preview: %r",
+        language,
+        preview,
+    )
+    return None
 
 
 def _truncate_comment(comment: Optional[str]) -> Optional[str]:

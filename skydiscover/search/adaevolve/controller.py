@@ -34,7 +34,7 @@ from skydiscover.search.default_discovery_controller import (
 )
 from skydiscover.search.utils.discovery_utils import SerializableResult
 from skydiscover.utils.code_utils import (
-    apply_diff,
+    apply_diff_detailed,
     extract_diffs,
     format_diff_summary,
     parse_full_rewrite,
@@ -642,7 +642,25 @@ class AdaEvolveController(DiscoveryController):
         elif self.config.diff_based_generation:
             diffs = extract_diffs(response)
             if diffs:
-                child_solution = apply_diff(parent.solution, response)
+                child_solution, applied, total = apply_diff_detailed(parent.solution, response)
+                if applied == 0:
+                    # Every SEARCH block missed. Without this guard the child is
+                    # byte-identical to its parent and would be evaluated and
+                    # stored as if it were a genuine new candidate.
+                    return SerializableResult(
+                        error=(
+                            f"Diff SEARCH blocks did not match parent solution "
+                            f"(0/{total} applied) - no changes applied"
+                        ),
+                        iteration=iteration,
+                    )
+                if applied < total:
+                    logger.warning(
+                        "Iteration %s: only %s/%s diff blocks matched the parent solution.",
+                        iteration,
+                        applied,
+                        total,
+                    )
                 changes = format_diff_summary(diffs)
             else:
                 # No diffs found, try full rewrite
