@@ -17,6 +17,7 @@ from skydiscover.search.default_discovery_controller import (
 from skydiscover.search.registry import create_database, get_program
 from skydiscover.search.route import get_discovery_controller
 from skydiscover.search.utils.logging_utils import setup_search_logging
+from skydiscover.seed_pool import dedupe_seeds, load_seed_pool
 from skydiscover.utils.code_utils import extract_solution_language
 from skydiscover.utils.metrics import format_metrics, get_score
 
@@ -76,6 +77,27 @@ class Runner:
         if self.config.file_suffix == ".py":
             self.config.file_suffix = self.file_extension
 
+        # Optional extra seed programs. Loaded here because the glob depends on
+        # file_extension, which is only settled just above.
+        try:
+            self.seed_pool = dedupe_seeds(
+                load_seed_pool(
+                    self.config.seed_programs_dir,
+                    self.initial_program_path,
+                    self.file_extension,
+                    max_seeds=self.config.max_seed_programs,
+                ),
+                existing=self.initial_program_solution,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load seed program pool: {e}")
+            self.seed_pool = []
+        if self.seed_pool:
+            logger.info(
+                f"Seed pool: {len(self.seed_pool)} extra program(s) from "
+                f"{self.config.seed_programs_dir}"
+            )
+
         # Create the database
         self.database = create_database(self.config.search.type, self.config.search.database)
         self.database.language = self.config.language or "python"
@@ -93,15 +115,29 @@ class Runner:
         if not self.database or not self.database.programs or not self.initial_program_solution:
             return None
 
+        # The score recorded at insertion is authoritative and survives the
+        # program being evicted from a capped population later in the run.
+        recorded = getattr(self.database, "initial_program_score", None)
+        if recorded is not None:
+            return recorded
+
         seed_solution = self.initial_program_solution
         seed_prog = None
-        for prog in self.database.programs.values():
-            if prog.solution == seed_solution:
-                seed_prog = prog
-                break
+        initial_id = getattr(self.database, "initial_program_id", None)
+        if initial_id:
+            seed_prog = self.database.programs.get(initial_id)
         if seed_prog is None:
             for prog in self.database.programs.values():
-                if prog.iteration_found == 0:
+                if prog.solution == seed_solution:
+                    seed_prog = prog
+                    break
+        if seed_prog is None:
+            # Last resort. iteration_found == 0 alone is no longer enough to
+            # identify the seed — every pool member shares it — so require the
+            # solution to match too, rather than report another program's score
+            # as the baseline.
+            for prog in self.database.programs.values():
+                if prog.iteration_found == 0 and prog.solution == seed_solution:
                     seed_prog = prog
                     break
 
@@ -155,6 +191,8 @@ class Runner:
 
         if should_add_initial:
             await self._add_initial_program(start_iteration)
+            if self.seed_pool:
+                await self._add_seed_pool(start_iteration)
         else:
             logger.info(
                 f"Resuming from iteration {start_iteration} with {len(self.database.programs)} programs"
@@ -267,8 +305,26 @@ class Runner:
     # Initial program
     # ------------------------------------------------------------------
 
-    async def _add_initial_program(self, start_iteration: int) -> None:
-        logger.info("Adding initial program to database")
+    async def _add_initial_program(
+        self,
+        start_iteration: int,
+        *,
+        solution: Optional[str] = None,
+        source_path: Optional[str] = None,
+        target_island: Optional[int] = None,
+    ) -> None:
+        """Evaluate a seed program and add it to the database.
+
+        With no *solution* this is the primary seed and behaves exactly as it
+        always has. Pool members pass their own source and an island, and never
+        claim the ``initial_program_*`` baseline — that stays the program the
+        user actually pointed the run at, so reported improvement keeps its
+        meaning regardless of how many seeds were supplied.
+        """
+        is_pool_member = solution is not None
+        solution = solution if solution is not None else self.initial_program_solution
+        label = os.path.basename(source_path) if source_path else "initial program"
+        logger.info(f"Adding {label} to database")
         program_id = str(uuid.uuid4())
 
         initial_image_path = None
@@ -278,7 +334,7 @@ class Runner:
             try:
                 result = await self.discovery_controller.llms.generate(
                     system_message="Generate an image based on the following description. Also provide brief reasoning about your creative choices.",
-                    messages=[{"role": "user", "content": self.initial_program_solution}],
+                    messages=[{"role": "user", "content": solution}],
                     image_output=True,
                     output_dir=img_dir,
                     program_id=program_id,
@@ -291,7 +347,7 @@ class Runner:
         eval_input = (
             initial_image_path
             if self.config.language == "image" and initial_image_path
-            else self.initial_program_solution
+            else solution
         )
         eval_result = await self.discovery_controller.evaluator.evaluate_program(
             eval_input, program_id
@@ -301,21 +357,57 @@ class Runner:
         if not initial_image_path and isinstance(metrics.get("image_path"), str):
             initial_image_path = metrics.pop("image_path")
 
-        program = get_program(
-            self.config, self.initial_program_solution, program_id, metrics, start_iteration
-        )
+        program = get_program(self.config, solution, program_id, metrics, start_iteration)
         program.artifacts = eval_result.artifacts
 
         if initial_image_path:
             program.metadata = program.metadata or {}
             program.metadata["image_path"] = initial_image_path
 
-        self.database.add(program)
+        if source_path:
+            program.metadata = program.metadata or {}
+            program.metadata["seed_source"] = source_path
+
+        # Keep the primary path byte-identical: databases that know nothing
+        # about islands must still see a bare add(program).
+        add_kwargs = {}
+        if target_island is not None:
+            add_kwargs.update(iteration=start_iteration, target_island=target_island, is_seed=True)
+        self.database.add(program, **add_kwargs)
+
+        if is_pool_member:
+            return
         try:
             self.database.initial_program_id = program.id
             self.database.initial_program_score = get_score(program.metrics or {})
         except Exception as e:
             logger.warning(f"Failed to set initial program score: {e}")
+
+    def _seed_target_island(self, index: int) -> Optional[int]:
+        """Spread pool seeds across islands, leaving island 0 to the primary."""
+        num_islands = getattr(self.database, "num_islands", 0) or 0
+        if num_islands <= 1:
+            return None
+        return (index + 1) % num_islands
+
+    async def _add_seed_pool(self, start_iteration: int) -> None:
+        """Evaluate and add every extra seed, sequentially.
+
+        Sequential on purpose: these run before the monitor starts, and a
+        runtime-scored benchmark would report distorted fitnesses if several
+        candidates competed for the CPU.
+        """
+        for index, (path, solution) in enumerate(self.seed_pool):
+            try:
+                await self._add_initial_program(
+                    start_iteration,
+                    solution=solution,
+                    source_path=path,
+                    target_island=self._seed_target_island(index),
+                )
+            except Exception as e:
+                # One malformed seed must not prevent the run from starting.
+                logger.warning(f"Failed to add seed program {path}: {e}")
 
     # ------------------------------------------------------------------
     # Monitor and feedback setup

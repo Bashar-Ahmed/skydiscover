@@ -664,6 +664,12 @@ class Config:
     language: Optional[str] = None
     file_suffix: str = ".py"
 
+    # Optional directory of extra seed programs used to initialise a diverse
+    # starting population. A relative path resolves against the primary seed
+    # program's directory. None keeps the historical single-seed behaviour.
+    seed_programs_dir: Optional[str] = None
+    max_seed_programs: int = 16
+
     # Component configurations
     llm: LLMConfig = field(default_factory=LLMConfig)
     context_builder: ContextBuilderConfig = field(default_factory=ContextBuilderConfig)
@@ -809,6 +815,8 @@ class Config:
             "checkpoint_interval": self.checkpoint_interval,
             "log_level": self.log_level,
             "log_dir": self.log_dir,
+            "seed_programs_dir": self.seed_programs_dir,
+            "max_seed_programs": self.max_seed_programs,
             # Component configurations
             "llm": {
                 "models": self.llm.models,

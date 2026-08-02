@@ -45,6 +45,8 @@ configs and is silently dropped — `Config` has no such field.
 | `log_dir` | `None` | defaults under the output dir |
 | `language` | inferred from seed | `"image"` and `{text, prompt, text/plain}` change template selection, evaluator input, and AdaEvolve label sets |
 | `file_suffix` | `".py"` | auto-set from the seed's extension |
+| `seed_programs_dir` | `None` | directory of **extra** seed programs, evaluated and added before iteration 1. Relative paths resolve against the primary seed's directory. Only files matching the primary's extension are read; whitespace-identical duplicates (including a copy of the primary) are dropped. On an island database they are spread round-robin over islands 1..N-1, leaving island 0 to the primary. `None` = historical single-seed behaviour |
+| `max_seed_programs` | 16 | cap on the pool — each seed costs one evaluator run *before* the loop starts, with no monitor yet, so an uncapped directory looks like a hang |
 | `diff_based_generation` | `true` | **the single most behaviour-defining flag** — SEARCH/REPLACE diffs vs. full rewrite |
 | `max_solution_length` | 60000 | over-length becomes a *parse error*, not a truncation |
 | `max_parallel_iterations` | 1 | **only the base controller reads it** — inert for adaevolve / evox / gepa_native / claude_code. Documented nowhere else. |

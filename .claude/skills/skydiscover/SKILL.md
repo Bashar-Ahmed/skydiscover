@@ -153,6 +153,15 @@ iteration — see `references/gotchas.md`.
 - There is **no cost model or budget cap** for API backends; `response.usage` is
   never read. The Claude CLI backend is the exception — it records cost and
   tokens (`llm/claude_cli.py::GLOBAL_COST_TRACKER`).
+- **Guard against evaluator overfitting.** The loop maximises exactly what the
+  evaluator returns, so a candidate that memorises the fixed test vectors scores
+  as well as a real algorithm. Declare `mode` on your `evaluate()` and score a
+  held-out split (see `references/evaluation.md`); otherwise the final
+  `test_*` numbers are just the training numbers again.
+- **Seed diversity is the cheapest search win available.** `seed_programs_dir`
+  starts each island from a different algorithm instead of cloning one seed
+  everywhere, and it costs zero LLM calls — the seeds are scored by the
+  evaluator alone. On a subscription plan that is the only budget that matters.
 - **No sandboxing on evaluation.** Containerized evaluation is
   `docker run -d --rm --entrypoint sleep <tag> infinity` — no `--memory`,
   `--cpus`, `--network`, or `--gpus` anywhere in the repo. LLM-generated code

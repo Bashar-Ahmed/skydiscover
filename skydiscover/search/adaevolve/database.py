@@ -410,6 +410,7 @@ class AdaEvolveDatabase(ProgramDatabase):
         iteration: Optional[int] = None,
         parent_id: Optional[str] = None,
         target_island: Optional[int] = None,
+        is_seed: bool = False,
         **kwargs,
     ) -> str:
         """
@@ -420,12 +421,19 @@ class AdaEvolveDatabase(ProgramDatabase):
             iteration: Current iteration (for tracking)
             parent_id: Parent's ID (for genealogy)
             target_island: Specific island (for migrations). None = current_island.
+            is_seed: This is initial-population seeding, not a migration. Seeds
+                are placed on a specific island but were evaluated for that
+                island, so they must count as ordinary evaluations — otherwise
+                every island but the current one starts with zero UCB visits and
+                the bandit ignores the seed fitnesses entirely.
 
         Returns:
             Program ID
         """
         island_idx = target_island if target_island is not None else self.current_island
-        is_migration = target_island is not None and target_island != self.current_island
+        is_migration = (
+            (not is_seed) and target_island is not None and target_island != self.current_island
+        )
 
         if island_idx < 0 or island_idx >= self.num_islands:
             raise ValueError(f"Invalid island index {island_idx}")
@@ -478,8 +486,14 @@ class AdaEvolveDatabase(ProgramDatabase):
             # Update global best and track for paradigm
             global_improved = self._update_best_program(program)
 
-            # Record improvement for paradigm tracking
-            if self.paradigm_tracker is not None and not is_migration:
+            # Record improvement for paradigm tracking. Seeds are excluded:
+            # the tracker measures the rate at which *evolution* produces new
+            # global bests over a fixed window, and initial population members
+            # carry no such information. Counting them fills the window with
+            # non-improvements before iteration 1, so a pool larger than
+            # paradigm_window_size makes the run look stagnant from the start
+            # and spends a paradigm breakthrough before a single edit.
+            if self.paradigm_tracker is not None and not is_migration and not is_seed:
                 self.paradigm_tracker.record_improvement(global_improved, self._global_best_score)
 
             # Save if configured
