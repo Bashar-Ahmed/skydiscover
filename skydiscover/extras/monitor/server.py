@@ -29,6 +29,22 @@ logger = logging.getLogger(__name__)
 DASHBOARD_PATH = Path(__file__).parent / "dashboard.html"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+#: Default summary model. Runs on the local ``claude`` binary so the dashboard
+#: works on a Claude subscription with no API key, matching the framework's
+#: default LLM provider. Sonnet rather than the run's Opus: summaries are short
+#: and frequent, so they do not warrant the run model.
+DEFAULT_SUMMARY_MODEL = "claude_cli/claude-sonnet-5"
+
+#: Model-name prefixes served by a local executable rather than an HTTP API.
+#: Mirrors ``config._LOCAL_PROVIDERS``; duplicated as a plain string check so
+#: this module stays importable without pulling in the config package.
+_LOCAL_SUMMARY_PREFIXES = ("claude_cli/", "claude-cli/")
+
+
+def _is_local_summary_model(model: str) -> bool:
+    """True when the summary model is driven by a local binary (no API key)."""
+    return (model or "").lower().startswith(_LOCAL_SUMMARY_PREFIXES)
+
 
 def _ws_accept_key(client_key: str) -> str:
     digest = hashlib.sha1((client_key + WS_GUID).encode()).digest()
@@ -125,6 +141,9 @@ class MonitorServer:
         self._summary_generating: bool = False
         self._summary_last_program_count: int = 0
         self._summary_executor: Optional[ThreadPoolExecutor] = None
+        # Lazily built ClaudeCLILLM when the summary model is a local-binary
+        # provider. Kept alive so the binary is resolved only once.
+        self._summary_cli_backend: Optional[Any] = None
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -178,7 +197,7 @@ class MonitorServer:
 
     def configure_summary(
         self,
-        model: str = "gpt-5-mini",
+        model: str = DEFAULT_SUMMARY_MODEL,
         api_key: str = "",
         api_base: str = "https://api.openai.com/v1",
         top_k: int = 3,
@@ -187,9 +206,12 @@ class MonitorServer:
         """Configure the AI summary generator.
 
         Args:
-            model: OpenAI model name (default gpt-5-mini).
-            api_key: API key. Falls back to OPENAI_API_KEY env var.
-            api_base: API base URL.
+            model: Model name. A ``claude_cli/`` prefix routes through the local
+                ``claude`` binary and needs no API key; anything else is treated
+                as an OpenAI-compatible HTTP model.
+            api_key: API key. Falls back to OPENAI_API_KEY env var. Unused (and
+                not required) for local-binary providers.
+            api_base: API base URL. Unused for local-binary providers.
             top_k: Number of top programs to include in summary prompt.
             interval: Auto-generate every N new programs (0 = manual only).
         """
@@ -198,6 +220,7 @@ class MonitorServer:
         self._summary_api_base = api_base.rstrip("/")
         self._summary_top_k = top_k
         self._summary_interval = interval
+        self._summary_cli_backend = None
         self._summary_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="summary")
 
         # Set initial placeholder text so UI knows summary is ready
@@ -206,10 +229,24 @@ class MonitorServer:
                 "Click 'Refresh Summary' to generate an AI summary of the top programs."
             )
 
+        if _is_local_summary_model(model):
+            auth = "local claude binary (no API key)"
+        else:
+            auth = f"api_key={'set' if self._summary_api_key else 'MISSING'}"
         logger.info(
             f"AI summary configured: model={model}, top_k={top_k}, "
-            f"interval={interval or 'manual'}, api_key={'set' if self._summary_api_key else 'MISSING'}"
+            f"interval={interval or 'manual'}, {auth}"
         )
+
+    def _summary_credentials_ok(self) -> bool:
+        """Whether the summary backend can actually be called.
+
+        Local-binary providers carry their own credentials, so they only need a
+        model name; HTTP providers additionally need an API key.
+        """
+        if not self._summary_model:
+            return False
+        return _is_local_summary_model(self._summary_model) or bool(self._summary_api_key)
 
     def _get_feedback_state(self) -> Dict[str, Any]:
         """Return current human feedback state."""
@@ -631,8 +668,8 @@ class MonitorServer:
             )
             return
 
-        # Need API key + model
-        if not self._summary_model or not self._summary_api_key:
+        # Need a usable backend: a model, plus an API key for HTTP providers
+        if not self._summary_credentials_ok():
             await self._ws_send(
                 writer,
                 json.dumps(
@@ -759,12 +796,17 @@ class MonitorServer:
                 )
             )
             return
-        if not self._summary_api_key:
+        if not self._summary_credentials_ok():
             await self._broadcast(
                 json.dumps(
                     {
                         "type": "summary_update",
-                        "summary_text": "AI summary not configured. Set OPENAI_API_KEY environment variable or summary_api_key in config.",
+                        "summary_text": (
+                            f"AI summary not configured for model '{self._summary_model}'. "
+                            "Set OPENAI_API_KEY (or monitor.summary_api_key), or use a "
+                            "'claude_cli/' model to run on the local claude binary with "
+                            "no API key."
+                        ),
                         "summary_generating": False,
                         "summary_enabled": False,
                     }
@@ -1017,7 +1059,10 @@ class MonitorServer:
     def _call_llm_api(
         self, prompt_data: Dict[str, str], max_tokens: int = 8192, timeout: int = 180
     ) -> str:
-        """Call OpenAI-compatible API (blocking, runs in executor thread)."""
+        """Generate a summary (blocking, runs in executor thread)."""
+        if _is_local_summary_model(self._summary_model):
+            return self._call_claude_cli(prompt_data, max_tokens=max_tokens, timeout=timeout)
+
         url = f"{self._summary_api_base}/chat/completions"
         body = json.dumps(
             {
@@ -1049,3 +1094,37 @@ class MonitorServer:
             raise RuntimeError(f"API error {e.code}: {error_body}") from e
         except Exception as e:
             raise RuntimeError(f"API call failed: {e}") from e
+
+    def _call_claude_cli(
+        self, prompt_data: Dict[str, str], max_tokens: int = 8192, timeout: int = 180
+    ) -> str:
+        """Generate a summary through the local ``claude`` binary.
+
+        Reuses ``ClaudeCLILLM`` rather than shelling out here, so binary
+        discovery, retries, usage-limit pauses, and cost tracking stay in one
+        place. Imported lazily because constructing it probes for the binary,
+        and a dashboard using an HTTP model should not pay that cost.
+
+        ``asyncio.run`` is safe here: this runs on the summary executor thread,
+        which has no event loop of its own, so nothing is blocked by it.
+        """
+        if self._summary_cli_backend is None:
+            from skydiscover.config import LLMModelConfig
+            from skydiscover.llm.claude_cli import ClaudeCLILLM
+
+            cfg = LLMModelConfig(name=self._summary_model, provider="claude_cli")
+            cfg.max_tokens = max_tokens
+            cfg.timeout = timeout
+            self._summary_cli_backend = ClaudeCLILLM(cfg)
+
+        try:
+            response = asyncio.run(
+                self._summary_cli_backend.generate(
+                    prompt_data["system"],
+                    [{"role": "user", "content": prompt_data["user"]}],
+                )
+            )
+        except Exception as e:
+            raise RuntimeError(f"Claude CLI summary failed: {e}") from e
+
+        return (response.text or "").strip()

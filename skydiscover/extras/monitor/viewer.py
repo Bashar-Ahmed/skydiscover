@@ -214,8 +214,9 @@ def main() -> None:
     parser.add_argument(
         "--summary-model",
         default="",
-        help="LLM model for per-program summaries (default: gpt-5-mini). "
-        "Requires OPENAI_API_KEY env var.",
+        help="LLM model for per-program summaries. Defaults to a 'claude_cli/' "
+        "model, which runs on the local claude binary and needs no API key. "
+        "Pass an OpenAI-compatible name (e.g. gpt-5-mini) to use OPENAI_API_KEY instead.",
     )
     parser.add_argument(
         "--summary-api-base",
@@ -242,16 +243,15 @@ def main() -> None:
     monitor_programs = [_to_monitor_format(p, all_progs) for p in prog_list]
 
     # Start server
-    from skydiscover.extras.monitor.server import MonitorServer
+    from skydiscover.extras.monitor.server import DEFAULT_SUMMARY_MODEL, MonitorServer
 
     server = MonitorServer(host=args.host, port=args.port)
 
-    # Configure per-program & global summary
-    summary_model = args.summary_model
-    if not summary_model and os.environ.get("OPENAI_API_KEY"):
-        summary_model = "gpt-5-mini"
-    if summary_model:
-        server.configure_summary(model=summary_model, api_base=args.summary_api_base, interval=0)
+    # Configure per-program & global summary. The local-binary default means
+    # summaries work out of the box on a Claude subscription; previously this
+    # silently disabled itself whenever OPENAI_API_KEY was unset.
+    summary_model = args.summary_model or DEFAULT_SUMMARY_MODEL
+    server.configure_summary(model=summary_model, api_base=args.summary_api_base, interval=0)
 
     server.start()
 
@@ -292,10 +292,7 @@ def main() -> None:
 
     print(f"\n  Dashboard ready at http://localhost:{args.port}/")
     print(f"  {len(prog_list)} programs loaded from {ckpt_dir}")
-    if summary_model:
-        print(f"  Per-program summaries: {summary_model}")
-    else:
-        print("  Per-program summaries: disabled (set OPENAI_API_KEY or --summary-model)")
+    print(f"  Per-program summaries: {summary_model}")
     print("  Press Ctrl+C to stop\n")
 
     try:
