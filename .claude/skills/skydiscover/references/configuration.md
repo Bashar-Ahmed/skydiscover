@@ -40,7 +40,7 @@ configs and is silently dropped — `Config` has no such field.
 | Key | Default | Effect |
 |---|---|---|
 | `max_iterations` | 100 | CLI `-i` overrides |
-| `checkpoint_interval` | 10 | `checkpoints/checkpoint_<n>/` cadence |
+| `checkpoint_interval` | **1** | `checkpoints/checkpoint_<n>/` cadence. Defaults to every iteration so an interrupted run loses nothing; each checkpoint is a full snapshot, so raise it if disk matters |
 | `log_level` | `"INFO"` | |
 | `log_dir` | `None` | defaults under the output dir |
 | `language` | inferred from seed | `"image"` and `{text, prompt, text/plain}` change template selection, evaluator input, and AdaEvolve label sets |
@@ -48,14 +48,14 @@ configs and is silently dropped — `Config` has no such field.
 | `diff_based_generation` | `true` | **the single most behaviour-defining flag** — SEARCH/REPLACE diffs vs. full rewrite |
 | `max_solution_length` | 60000 | over-length becomes a *parse error*, not a truncation |
 | `max_parallel_iterations` | 1 | **only the base controller reads it** — inert for adaevolve / evox / gepa_native / claude_code. Documented nowhere else. |
-| `human_feedback_enabled` | `false` | `human_feedback_mode: "replace"` overwrites `prompt["system"]` wholesale |
+| `human_feedback_enabled` | **`true`** | `human_feedback_mode: "replace"` overwrites `prompt["system"]` wholesale |
 | `system_prompt_override` | `None` | runtime-only, set by `apply_overrides` |
 
 ## `llm`
 
 | Key | Default | Notes |
 |---|---|---|
-| `models` | `[]` | list of `{name, weight}` |
+| `models` | **`[{name: claude_cli/claude-opus-5}]`** | list of `{name, weight}`. The default runs on the local `claude` binary (`config.py::DEFAULT_MODEL`), so a run with no `-m` and no `claude` installed raises `RuntimeError` at pool construction. `-m <model>` replaces the list outright |
 | `evaluator_models` / `guide_models` | `[]` | `__post_init__` copies from `models` when empty (**shallow copy — same objects**) |
 | `temperature` | 0.7 | dropped automatically for models that reject it; see `llm-backends.md` |
 | `top_p` | **`None`** | load-bearing: Anthropic/Bedrock reject temperature and top_p together. `None` params are omitted entirely |
@@ -127,10 +127,16 @@ The YAML section is `prompt:` but the dataclass is `ContextBuilderConfig`.
 
 | Key | Default |
 |---|---|
-| `enabled` | `false` |
-| `port` | 8765 |
+| `enabled` | **`true`** |
+| `port` / `host` | 8765 / `"127.0.0.1"` — `_serve` auto-increments the port up to 10 times if taken |
+| `summary_model` | `"claude_cli/claude-sonnet-5"` — a `claude_cli/` model needs no API key; anything else is called over HTTP and does |
+| `summary_interval` / `summary_top_k` | 0 (manual refresh only) / 3 |
+| `max_solution_length` | 10000 — truncation for what the dashboard broadcasts |
 
-⚠️ Enabling the monitor **also silently enables human-feedback file polling**.
+⚠️ The monitor is **on by default**, so every run binds a port and starts a daemon
+thread. Enabling it **also silently enables human-feedback file polling**,
+regardless of `human_feedback_enabled` (`Runner._setup_human_feedback` gates on
+`... or monitor_server`).
 
 ## Providers
 
