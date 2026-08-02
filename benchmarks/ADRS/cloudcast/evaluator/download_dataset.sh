@@ -7,8 +7,7 @@
 #   examples/config/*.json    - Network configurations for evaluation
 #
 # Usage:
-#   cd benchmarks/ADRS/cloudcast
-#   bash download_dataset.sh
+#   bash benchmarks/ADRS/cloudcast/evaluator/download_dataset.sh
 
 set -euo pipefail
 cd "$(dirname "$0")"

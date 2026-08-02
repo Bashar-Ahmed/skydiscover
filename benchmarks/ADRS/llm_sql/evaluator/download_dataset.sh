@@ -9,8 +9,7 @@
 #   products.csv  - Amazon product catalog (~16 MB)
 #
 # Usage:
-#   cd benchmarks/ADRS/llm_sql
-#   bash download_dataset.sh
+#   bash benchmarks/ADRS/llm_sql/evaluator/download_dataset.sh
 
 set -euo pipefail
 cd "$(dirname "$0")"

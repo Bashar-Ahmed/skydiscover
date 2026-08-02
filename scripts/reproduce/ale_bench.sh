@@ -20,6 +20,20 @@ uv sync --extra external
 
 # ── Helper ───────────────────────────────────────────────────────────────────
 
+# Resolve a task's evaluator: a plain evaluator.py when the task ships one,
+# otherwise the containerized evaluator/ directory (which most tasks use).
+_eval_path() {
+  local d=$1
+  if [[ -f "$d/evaluator.py" ]]; then
+    echo "$d/evaluator.py"
+  elif [[ -d "$d/evaluator" ]]; then
+    echo "$d/evaluator"
+  else
+    echo "ERROR: no evaluator found in $d" >&2
+    return 1
+  fi
+}
+
 run() {
   local dir=$1 search=$2
   local init="$dir/initial_program.py"
@@ -28,36 +42,42 @@ run() {
   local cfg="$dir/config.yaml"
   [[ -f "$dir/config_${search}.yaml" ]] && cfg="$dir/config_${search}.yaml"
   echo "== $search: ${dir#benchmarks/} =="
-  uv run skydiscover-run "$init" "$dir/evaluator.py" \
+  uv run skydiscover-run "$init" "$(_eval_path "$dir")" \
     -c "$cfg" -s "$search" -m "$MODEL" -i "$ITERATIONS" \
     -o "outputs/reproduce/$search/${dir#benchmarks/}"
 }
 
 # ── AdaEvolve ────────────────────────────────────────────────────────────────
+pids=()
 
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc008 adaevolve &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc011 adaevolve &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc015 adaevolve &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc016 adaevolve &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc024 adaevolve &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc025 adaevolve &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc026 adaevolve &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc027 adaevolve &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc039 adaevolve &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc046 adaevolve &
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc008 adaevolve & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc011 adaevolve & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc015 adaevolve & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc016 adaevolve & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc024 adaevolve & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc025 adaevolve & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc026 adaevolve & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc027 adaevolve & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc039 adaevolve & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc046 adaevolve & pids+=($!)
 
 # ── EvoX ─────────────────────────────────────────────────────────────────────
 
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc008 evox &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc011 evox &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc015 evox &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc016 evox &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc024 evox &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc025 evox &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc026 evox &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc027 evox &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc039 evox &
-run benchmarks/ale_bench/ale-bench-lite-problems/ahc046 evox &
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc008 evox & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc011 evox & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc015 evox & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc016 evox & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc024 evox & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc025 evox & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc026 evox & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc027 evox & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc039 evox & pids+=($!)
+run benchmarks/ale_bench/ale-bench-lite-problems/ahc046 evox & pids+=($!)
 
-wait
-echo "ale_bench.sh: all 20 runs finished."
+fail=0
+for p in "${pids[@]}"; do wait "$p" || fail=$((fail + 1)); done
+if (( fail > 0 )); then
+  echo "ale_bench.sh: $fail of ${#pids[@]} runs FAILED." >&2
+  exit 1
+fi
+echo "ale_bench.sh: all ${#pids[@]} runs finished."

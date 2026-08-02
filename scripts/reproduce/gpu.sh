@@ -27,6 +27,20 @@ fi
 
 # ── Helper ───────────────────────────────────────────────────────────────────
 
+# Resolve a task's evaluator: a plain evaluator.py when the task ships one,
+# otherwise the containerized evaluator/ directory (which most tasks use).
+_eval_path() {
+  local d=$1
+  if [[ -f "$d/evaluator.py" ]]; then
+    echo "$d/evaluator.py"
+  elif [[ -d "$d/evaluator" ]]; then
+    echo "$d/evaluator"
+  else
+    echo "ERROR: no evaluator found in $d" >&2
+    return 1
+  fi
+}
+
 run() {
   local dir=$1 search=$2
   local init="$dir/initial_program.py"
@@ -35,24 +49,30 @@ run() {
   local cfg="$dir/config.yaml"
   [[ -f "$dir/config_${search}.yaml" ]] && cfg="$dir/config_${search}.yaml"
   echo "== $search: ${dir#benchmarks/} =="
-  uv run skydiscover-run "$init" "$dir/evaluator.py" \
+  uv run skydiscover-run "$init" "$(_eval_path "$dir")" \
     -c "$cfg" -s "$search" -m "$MODEL" -i "$ITERATIONS" \
     -o "outputs/reproduce/$search/${dir#benchmarks/}"
 }
 
 # ── AdaEvolve ────────────────────────────────────────────────────────────────
+pids=()
 
-run benchmarks/gpu_mode/grayscale  adaevolve &
-run benchmarks/gpu_mode/mla_decode adaevolve &
-run benchmarks/gpu_mode/trimul     adaevolve &
-run benchmarks/gpu_mode/vecadd     adaevolve &
+run benchmarks/gpu_mode/grayscale  adaevolve & pids+=($!)
+run benchmarks/gpu_mode/mla_decode adaevolve & pids+=($!)
+run benchmarks/gpu_mode/trimul     adaevolve & pids+=($!)
+run benchmarks/gpu_mode/vecadd     adaevolve & pids+=($!)
 
 # ── EvoX ─────────────────────────────────────────────────────────────────────
 
-run benchmarks/gpu_mode/grayscale  evox &
-run benchmarks/gpu_mode/mla_decode evox &
-run benchmarks/gpu_mode/trimul     evox &
-run benchmarks/gpu_mode/vecadd     evox &
+run benchmarks/gpu_mode/grayscale  evox & pids+=($!)
+run benchmarks/gpu_mode/mla_decode evox & pids+=($!)
+run benchmarks/gpu_mode/trimul     evox & pids+=($!)
+run benchmarks/gpu_mode/vecadd     evox & pids+=($!)
 
-wait
-echo "gpu.sh: all 8 runs finished."
+fail=0
+for p in "${pids[@]}"; do wait "$p" || fail=$((fail + 1)); done
+if (( fail > 0 )); then
+  echo "gpu.sh: $fail of ${#pids[@]} runs FAILED." >&2
+  exit 1
+fi
+echo "gpu.sh: all ${#pids[@]} runs finished."

@@ -20,6 +20,20 @@ uv sync --extra prompt-optimization
 
 # ── Helper ───────────────────────────────────────────────────────────────────
 
+# Resolve a task's evaluator: a plain evaluator.py when the task ships one,
+# otherwise the containerized evaluator/ directory (which most tasks use).
+_eval_path() {
+  local d=$1
+  if [[ -f "$d/evaluator.py" ]]; then
+    echo "$d/evaluator.py"
+  elif [[ -d "$d/evaluator" ]]; then
+    echo "$d/evaluator"
+  else
+    echo "ERROR: no evaluator found in $d" >&2
+    return 1
+  fi
+}
+
 run() {
   local dir=$1 search=$2
   local init="$dir/initial_program.py"
@@ -28,18 +42,24 @@ run() {
   local cfg="$dir/config.yaml"
   [[ -f "$dir/config_${search}.yaml" ]] && cfg="$dir/config_${search}.yaml"
   echo "== $search: ${dir#benchmarks/} =="
-  uv run skydiscover-run "$init" "$dir/evaluator.py" \
+  uv run skydiscover-run "$init" "$(_eval_path "$dir")" \
     -c "$cfg" -s "$search" -m "$MODEL" -i "$ITERATIONS" \
     -o "outputs/reproduce/$search/${dir#benchmarks/}"
 }
 
 # ── AdaEvolve ────────────────────────────────────────────────────────────────
+pids=()
 
-run benchmarks/prompt_optimization/hotpot_qa adaevolve &
+run benchmarks/prompt_optimization/hotpot_qa adaevolve & pids+=($!)
 
 # ── EvoX ─────────────────────────────────────────────────────────────────────
 
-run benchmarks/prompt_optimization/hotpot_qa evox &
+run benchmarks/prompt_optimization/hotpot_qa evox & pids+=($!)
 
-wait
-echo "prompt_opt.sh: all 2 runs finished."
+fail=0
+for p in "${pids[@]}"; do wait "$p" || fail=$((fail + 1)); done
+if (( fail > 0 )); then
+  echo "prompt_opt.sh: $fail of ${#pids[@]} runs FAILED." >&2
+  exit 1
+fi
+echo "prompt_opt.sh: all ${#pids[@]} runs finished."

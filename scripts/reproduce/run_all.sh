@@ -6,13 +6,30 @@ set -euo pipefail
 
 DIR="$(dirname "$0")"
 
-bash "$DIR/math.sh"        &
-bash "$DIR/adrs.sh"        &
-bash "$DIR/ale_bench.sh"   &
-bash "$DIR/frontier_cs.sh" &
-bash "$DIR/gpu.sh"         &
-bash "$DIR/arc.sh"         &
-bash "$DIR/prompt_opt.sh"  &
+names=()
+pids=()
 
-wait
+launch() {
+  bash "$DIR/$1" &
+  pids+=($!)
+  names+=("$1")
+}
+
+launch math.sh
+launch adrs.sh
+launch ale_bench.sh
+launch frontier_cs.sh
+launch gpu.sh
+launch arc.sh
+launch prompt_opt.sh
+
+failed=()
+for i in "${!pids[@]}"; do
+  wait "${pids[$i]}" || failed+=("${names[$i]}")
+done
+
+if (( ${#failed[@]} > 0 )); then
+  echo "run_all.sh: ${#failed[@]} of ${#pids[@]} scripts FAILED: ${failed[*]}" >&2
+  exit 1
+fi
 echo "All reproduce scripts finished."

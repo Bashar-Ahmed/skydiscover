@@ -27,6 +27,20 @@ fi
 
 # ── Helper ───────────────────────────────────────────────────────────────────
 
+# Resolve a task's evaluator: a plain evaluator.py when the task ships one,
+# otherwise the containerized evaluator/ directory (which most tasks use).
+_eval_path() {
+  local d=$1
+  if [[ -f "$d/evaluator.py" ]]; then
+    echo "$d/evaluator.py"
+  elif [[ -d "$d/evaluator" ]]; then
+    echo "$d/evaluator"
+  else
+    echo "ERROR: no evaluator found in $d" >&2
+    return 1
+  fi
+}
+
 run() {
   local dir=$1 search=$2
   local init="$dir/initial_program.py"
@@ -35,18 +49,24 @@ run() {
   local cfg="$dir/config.yaml"
   [[ -f "$dir/config_${search}.yaml" ]] && cfg="$dir/config_${search}.yaml"
   echo "== $search: ${dir#benchmarks/} =="
-  uv run skydiscover-run "$init" "$dir/evaluator.py" \
+  uv run skydiscover-run "$init" "$(_eval_path "$dir")" \
     -c "$cfg" -s "$search" -m "$MODEL" -i "$ITERATIONS" \
     -o "outputs/reproduce/$search/${dir#benchmarks/}"
 }
 
 # ── AdaEvolve ────────────────────────────────────────────────────────────────
+pids=()
 
-run benchmarks/frontier-cs-eval adaevolve &
+run benchmarks/frontier-cs-eval adaevolve & pids+=($!)
 
 # ── EvoX ─────────────────────────────────────────────────────────────────────
 
-run benchmarks/frontier-cs-eval evox &
+run benchmarks/frontier-cs-eval evox & pids+=($!)
 
-wait
-echo "frontier_cs.sh: all 2 runs finished."
+fail=0
+for p in "${pids[@]}"; do wait "$p" || fail=$((fail + 1)); done
+if (( fail > 0 )); then
+  echo "frontier_cs.sh: $fail of ${#pids[@]} runs FAILED." >&2
+  exit 1
+fi
+echo "frontier_cs.sh: all ${#pids[@]} runs finished."

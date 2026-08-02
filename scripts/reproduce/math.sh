@@ -20,6 +20,20 @@ uv sync --extra math
 
 # ── Helper ───────────────────────────────────────────────────────────────────
 
+# Resolve a task's evaluator: a plain evaluator.py when the task ships one,
+# otherwise the containerized evaluator/ directory (which most tasks use).
+_eval_path() {
+  local d=$1
+  if [[ -f "$d/evaluator.py" ]]; then
+    echo "$d/evaluator.py"
+  elif [[ -d "$d/evaluator" ]]; then
+    echo "$d/evaluator"
+  else
+    echo "ERROR: no evaluator found in $d" >&2
+    return 1
+  fi
+}
+
 run() {
   local dir=$1 search=$2
   local init="$dir/initial_program.py"
@@ -28,50 +42,56 @@ run() {
   local cfg="$dir/config.yaml"
   [[ -f "$dir/config_${search}.yaml" ]] && cfg="$dir/config_${search}.yaml"
   echo "== $search: ${dir#benchmarks/} =="
-  uv run skydiscover-run "$init" "$dir/evaluator.py" \
+  uv run skydiscover-run "$init" "$(_eval_path "$dir")" \
     -c "$cfg" -s "$search" -m "$MODEL" -i "$ITERATIONS" \
     -o "outputs/reproduce/$search/${dir#benchmarks/}"
 }
 
 # ── AdaEvolve ────────────────────────────────────────────────────────────────
+pids=()
 
-run benchmarks/math/circle_packing           adaevolve &
-run benchmarks/math/circle_packing_rect      adaevolve &
-run benchmarks/math/erdos_min_overlap        adaevolve &
-run benchmarks/math/first_autocorr_ineq      adaevolve &
-run benchmarks/math/second_autocorr_ineq     adaevolve &
-run benchmarks/math/third_autocorr_ineq      adaevolve &
-run benchmarks/math/uncertainty_ineq         adaevolve &
-run benchmarks/math/hexagon_packing/11       adaevolve &
-run benchmarks/math/hexagon_packing/12       adaevolve &
-run benchmarks/math/heilbronn_convex/13      adaevolve &
-run benchmarks/math/heilbronn_convex/14      adaevolve &
-run benchmarks/math/heilbronn_triangle       adaevolve &
-run benchmarks/math/minimizing_max_min_dist/2 adaevolve &
-run benchmarks/math/minimizing_max_min_dist/3 adaevolve &
-run benchmarks/math/matmul                   adaevolve &
-run benchmarks/math/signal_processing        adaevolve &
-run benchmarks/math/sums_diffs_finite_sets   adaevolve &
+run benchmarks/math/circle_packing           adaevolve & pids+=($!)
+run benchmarks/math/circle_packing_rect      adaevolve & pids+=($!)
+run benchmarks/math/erdos_min_overlap        adaevolve & pids+=($!)
+run benchmarks/math/first_autocorr_ineq      adaevolve & pids+=($!)
+run benchmarks/math/second_autocorr_ineq     adaevolve & pids+=($!)
+run benchmarks/math/third_autocorr_ineq      adaevolve & pids+=($!)
+run benchmarks/math/uncertainty_ineq         adaevolve & pids+=($!)
+run benchmarks/math/hexagon_packing/11       adaevolve & pids+=($!)
+run benchmarks/math/hexagon_packing/12       adaevolve & pids+=($!)
+run benchmarks/math/heilbronn_convex/13      adaevolve & pids+=($!)
+run benchmarks/math/heilbronn_convex/14      adaevolve & pids+=($!)
+run benchmarks/math/heilbronn_triangle       adaevolve & pids+=($!)
+run benchmarks/math/minimizing_max_min_dist/2 adaevolve & pids+=($!)
+run benchmarks/math/minimizing_max_min_dist/3 adaevolve & pids+=($!)
+run benchmarks/math/matmul                   adaevolve & pids+=($!)
+run benchmarks/math/signal_processing        adaevolve & pids+=($!)
+run benchmarks/math/sums_diffs_finite_sets   adaevolve & pids+=($!)
 
 # ── EvoX ─────────────────────────────────────────────────────────────────────
 
-run benchmarks/math/circle_packing           evox &
-run benchmarks/math/circle_packing_rect      evox &
-run benchmarks/math/erdos_min_overlap        evox &
-run benchmarks/math/first_autocorr_ineq      evox &
-run benchmarks/math/second_autocorr_ineq     evox &
-run benchmarks/math/third_autocorr_ineq      evox &
-run benchmarks/math/uncertainty_ineq         evox &
-run benchmarks/math/hexagon_packing/11       evox &
-run benchmarks/math/hexagon_packing/12       evox &
-run benchmarks/math/heilbronn_convex/13      evox &
-run benchmarks/math/heilbronn_convex/14      evox &
-run benchmarks/math/heilbronn_triangle       evox &
-run benchmarks/math/minimizing_max_min_dist/2 evox &
-run benchmarks/math/minimizing_max_min_dist/3 evox &
-run benchmarks/math/matmul                   evox &
-run benchmarks/math/signal_processing        evox &
-run benchmarks/math/sums_diffs_finite_sets   evox &
+run benchmarks/math/circle_packing           evox & pids+=($!)
+run benchmarks/math/circle_packing_rect      evox & pids+=($!)
+run benchmarks/math/erdos_min_overlap        evox & pids+=($!)
+run benchmarks/math/first_autocorr_ineq      evox & pids+=($!)
+run benchmarks/math/second_autocorr_ineq     evox & pids+=($!)
+run benchmarks/math/third_autocorr_ineq      evox & pids+=($!)
+run benchmarks/math/uncertainty_ineq         evox & pids+=($!)
+run benchmarks/math/hexagon_packing/11       evox & pids+=($!)
+run benchmarks/math/hexagon_packing/12       evox & pids+=($!)
+run benchmarks/math/heilbronn_convex/13      evox & pids+=($!)
+run benchmarks/math/heilbronn_convex/14      evox & pids+=($!)
+run benchmarks/math/heilbronn_triangle       evox & pids+=($!)
+run benchmarks/math/minimizing_max_min_dist/2 evox & pids+=($!)
+run benchmarks/math/minimizing_max_min_dist/3 evox & pids+=($!)
+run benchmarks/math/matmul                   evox & pids+=($!)
+run benchmarks/math/signal_processing        evox & pids+=($!)
+run benchmarks/math/sums_diffs_finite_sets   evox & pids+=($!)
 
-wait
-echo "math.sh: all 34 runs finished."
+fail=0
+for p in "${pids[@]}"; do wait "$p" || fail=$((fail + 1)); done
+if (( fail > 0 )); then
+  echo "math.sh: $fail of ${#pids[@]} runs FAILED." >&2
+  exit 1
+fi
+echo "math.sh: all ${#pids[@]} runs finished."
