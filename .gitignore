@@ -19,7 +19,11 @@ env/
 .vscode/
 *.swp
 *.swo
-.claude/
+# Claude Code internal metadata (worktrees, session state) stays untracked, but
+# the checked-in repo skill under .claude/skills/ is shared. Note the `/*` form:
+# git cannot re-include a path whose parent directory is itself excluded.
+.claude/*
+!.claude/skills/
 
 # OS
 .DS_Store
