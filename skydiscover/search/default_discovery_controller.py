@@ -69,9 +69,11 @@ class DiscoveryController:
         self.shutdown_event = mp.Event()
         self.early_stopping_triggered = False
 
-        self.llms = LLMPool(self.config.llm.models)
-        self.evaluator_llms = LLMPool(self.config.llm.evaluator_models)
-        self.guide_llms = LLMPool(self.config.llm.guide_models)
+        _emulation = self.config.llm.temperature_emulation
+        _temperature = self.config.llm.temperature
+        self.llms = LLMPool(self.config.llm.models, _emulation, _temperature)
+        self.evaluator_llms = LLMPool(self.config.llm.evaluator_models, _emulation, _temperature)
+        self.guide_llms = LLMPool(self.config.llm.guide_models, _emulation, _temperature)
 
         self._init_context_builder()
 

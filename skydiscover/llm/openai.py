@@ -22,6 +22,7 @@ from skydiscover.llm.responses_utils import (
     convert_messages_to_responses_input,
     extract_responses_output,
 )
+from skydiscover.llm.temperature import model_supports_temperature
 
 logger = logging.getLogger("skydiscover.llm")
 
@@ -77,6 +78,19 @@ class OpenAILLM(LLMInterface):
         self.max_usage_limit_waits = int(
             getattr(model_cfg, "max_usage_limit_waits", None) or DEFAULT_MAX_USAGE_LIMIT_WAITS
         )
+
+        # The latest Claude models reject `temperature` outright. Sending it
+        # would fail every call, so drop it here; LLMPool reproduces its effect
+        # by reshaping model selection and reasoning effort instead.
+        if self.temperature is not None and not model_supports_temperature(
+            self.model, getattr(model_cfg, "provider", None)
+        ):
+            logger.info(
+                "Model %s does not accept a temperature parameter; omitting it "
+                "(temperature is emulated via model/effort selection).",
+                self.model,
+            )
+            self.temperature = None
 
         max_retries = self.retries if self.retries is not None else 0
         is_azure = self.api_base and ".openai.azure.com" in self.api_base.lower()

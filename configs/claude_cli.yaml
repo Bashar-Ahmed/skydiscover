@@ -1,0 +1,98 @@
+# Run SkyDiscover against a Claude subscription (Pro/Max) via the Claude Code
+# CLI instead of a metered API key.
+#
+# Prerequisites:
+#   1. Install Claude Code:  https://claude.com/claude-code
+#   2. Authenticate once:    claude auth
+#   3. Verify:               claude -p "say hi"
+#
+# No ANTHROPIC_API_KEY is needed — the CLI carries its own credentials. Nothing
+# is containerized: the binary runs directly on this machine, once per LLM call.
+#
+# Usage:
+#   uv run skydiscover-run initial_program.py evaluator.py -c configs/claude_cli.yaml
+#
+#   ...or without a config file:
+#   uv run skydiscover-run initial_program.py evaluator.py -m claude_cli/sonnet
+
+max_iterations: 100
+checkpoint_interval: 10
+log_level: "INFO"
+
+llm:
+  models:
+    # The `claude_cli/` prefix selects this backend. The model may be an alias
+    # (opus, sonnet, haiku, fable) or a full id (claude-sonnet-4-6).
+    - name: "claude_cli/sonnet"
+      weight: 1.0
+
+  # Claude Opus 4.7+ / Sonnet 5 / Fable 5 reject `temperature` outright, and the CLI
+  # exposes no sampling knob at all. This value is therefore NOT sent to the
+  # model; it drives the emulation block below. It keeps its usual meaning:
+  #   0.0 → fully deterministic     1.0 → configured behaviour     2.0 → maximally diverse
+  temperature: 0.7
+
+  max_tokens: 32000
+
+  # Per-call wall clock. The CLI is slower than a raw API call because it boots
+  # a Node process per request; 600s leaves room for high-effort generations.
+  timeout: 600
+  retries: 3
+  retry_delay: 5
+
+  # ── Temperature emulation ───────────────────────────────────────────
+  # Reconstructs the explore/exploit dial that `temperature` used to provide,
+  # using the two knobs the CLI does expose: which model is sampled, and how
+  # much reasoning effort each call is given.
+  #
+  #   model  : pool weights are reshaped as p_i ∝ w_i**(1/T)
+  #            T→0 collapses to the top-weighted model, T=1 keeps the configured
+  #            weights exactly, T→2 flattens towards uniform.
+  #   effort : drawn from a discrete Gaussian over effort_ladder centred on
+  #            base_effort with sigma = T * effort_spread.
+  #            T=0 pins effort to base_effort; higher T wanders further.
+  temperature_emulation:
+    enabled: auto          # auto | true | false
+                           # "auto" activates only when the pooled models cannot
+                           # accept a real temperature, so switching back to an
+                           # OpenAI model needs no config change.
+    vary_model: true
+    vary_effort: true
+    effort_ladder: ["low", "medium", "high", "xhigh", "max"]
+    base_effort: "medium"  # the centre of the effort distribution
+    effort_spread: 1.0     # ladder steps of jitter per unit of temperature
+    max_temperature: 2.0
+
+search:
+  type: "adaevolve"
+  num_context_programs: 4
+
+prompt:
+  system_message: |
+    You are an expert at designing and optimizing algorithms.
+    Reply with SEARCH/REPLACE diff blocks only.
+
+evaluator:
+  timeout: 600
+  cascade_evaluation: false
+
+diff_based_generation: true
+max_solution_length: 60000
+
+# ── Notes on usage limits ─────────────────────────────────────────────
+# When the plan's quota is exhausted, SkyDiscover parses the reset time out of
+# the CLI's response and pauses every LLM call until it passes, then resumes the
+# same iteration. A quota pause does not consume the retry budget, so a run that
+# crosses a five-hour window survives it instead of losing its remaining
+# iterations. Tune the ceiling per model entry if needed:
+#
+#   models:
+#     - name: "claude_cli/sonnet"
+#       max_usage_limit_waits: 24   # consecutive pauses before giving up
+#
+# Other per-model options this backend understands:
+#   cli_binary: "/path/to/claude"   # defaults to `claude` on PATH
+#                                   # (or $SKYDISCOVER_CLAUDE_BINARY)
+#   fallback_model: "haiku"         # used when the primary is overloaded
+#   max_budget_usd: 25              # hard spend ceiling passed to the CLI
+#   cli_extra_args: ["--verbose"]   # appended verbatim to every invocation

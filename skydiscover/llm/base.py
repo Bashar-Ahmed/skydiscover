@@ -23,6 +23,11 @@ class LLMInterface(ABC):
     Subclass this and implement generate() to add a new LLM provider.
     """
 
+    #: Whether this backend runs its own tool-using agent loop. When True,
+    #: AgenticGenerator delegates to generate(..., agentic=True) instead of
+    #: driving its own ReAct loop over function-calling tool schemas.
+    supports_native_agentic: bool = False
+
     @abstractmethod
     async def generate(
         self, system_message: str, messages: List[Dict[str, Any]], **kwargs

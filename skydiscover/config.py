@@ -34,7 +34,21 @@ _PROVIDERS: Dict[str, tuple] = {
     "huggingface": (None, ["HF_TOKEN", "HUGGINGFACE_API_KEY"]),
     "ollama": (None, []),
     "vllm": (None, []),
+    # Driven by the local `claude` binary rather than an HTTP endpoint, so it
+    # has neither a base URL nor an API key: auth comes from `claude auth`.
+    "claude_cli": (None, []),
+    "claude-cli": (None, []),
 }
+
+# Providers backed by a local executable. They must not be asked for an
+# api_base, and resolving an API key for them would be misleading.
+_LOCAL_PROVIDERS = {"claude_cli", "claude-cli"}
+
+
+def is_local_provider(provider: Optional[str]) -> bool:
+    """Whether *provider* is driven by a local binary instead of an HTTP API."""
+    return (provider or "").lower() in _LOCAL_PROVIDERS
+
 
 # Bare model-name prefixes → provider  (backwards compat for --model gpt-5, etc.)
 _BARE_PREFIX_MAP: Dict[str, str] = {
@@ -126,6 +140,11 @@ class LLMModelConfig:
     api_key: Optional[str] = None
     name: Optional[str] = None
 
+    # Resolved backend provider (e.g. "openai", "anthropic", "claude_cli").
+    # Filled in from the model name's provider prefix; selects which
+    # LLMInterface implementation LLMPool instantiates.
+    provider: Optional[str] = None
+
     # Custom LLM client
     init_client: Optional[Callable] = None
 
@@ -145,6 +164,21 @@ class LLMModelConfig:
 
     # Reasoning parameters
     reasoning_effort: Optional[str] = None
+
+    # Consecutive usage-limit pauses tolerated for a single call before giving
+    # up. Applies to every backend.
+    max_usage_limit_waits: Optional[int] = None
+
+    # ── Claude Code CLI backend (provider "claude_cli") ────────────────
+    # Path to the `claude` binary; defaults to the one on PATH (or
+    # $SKYDISCOVER_CLAUDE_BINARY).
+    cli_binary: Optional[str] = None
+    # Extra arguments appended verbatim to every CLI invocation.
+    cli_extra_args: Optional[List[str]] = None
+    # Hard spend ceiling passed through as --max-budget-usd.
+    max_budget_usd: Optional[float] = None
+    # Model used when the primary is overloaded (--fallback-model).
+    fallback_model: Optional[str] = None
 
 
 @dataclass
@@ -178,6 +212,13 @@ class LLMConfig(LLMModelConfig):
     # Reasoning parameters (inherited from LLMModelConfig but can be overridden)
     reasoning_effort: Optional[str] = None
 
+    # How to emulate sampling temperature on models that no longer accept a
+    # `temperature` parameter (Claude Opus 4.7+, Sonnet 5, Fable 5, and the
+    # Claude Code CLI; Opus 4.6 and the 4.5 family still accept it). See
+    # skydiscover/llm/temperature.py. Under the default "auto" this is inert
+    # for providers that still support real temperature.
+    temperature_emulation: Dict[str, Any] = field(default_factory=dict)
+
     def __post_init__(self):
         """Post-initialization to set up model configurations"""
         # If no evaluator models are defined, use the same models as for solution discovery
@@ -195,8 +236,22 @@ class LLMConfig(LLMModelConfig):
         # that update_model_params() below can propagate the user's value.
         user_set_api_base = self.api_base.rstrip("/") != _PROVIDERS["openai"][0].rstrip("/")
         for model in self.models + self.evaluator_models + self.guide_models:
+            # evaluator_models/guide_models default to shallow copies of
+            # `models`, so the same object is visited up to three times. A
+            # local-provider model keeps api_base None and would otherwise be
+            # re-parsed from its already-stripped bare name (e.g. "sonnet"),
+            # which falls through to the OpenAI default. Skip it once resolved.
+            if is_local_provider(model.provider):
+                continue
             if model.name and model.api_base is None:
                 provider, bare_name, provider_base, env_vars = _parse_model_spec(model.name)
+                if model.provider is None:
+                    model.provider = provider
+                # Local-binary providers have no endpoint and no key to resolve.
+                if is_local_provider(provider):
+                    if "/" in model.name:
+                        model.name = bare_name
+                    continue
                 # Skip provider URL only for unrecognized bare names that fell
                 # through to the OpenAI default — never for an explicitly-prefixed
                 # provider (e.g. "anthropic/claude-3-sonnet") or a known bare prefix.
@@ -230,7 +285,12 @@ class LLMConfig(LLMModelConfig):
         """Update model parameters for all models (including guide_models)."""
         all_models = self.models + self.evaluator_models + self.guide_models
         for model in all_models:
+            local = is_local_provider(model.provider)
             for key, value in args.items():
+                # A local-binary backend has no endpoint or key; inheriting the
+                # shared HTTP defaults would only mislead logs and checkpoints.
+                if local and key in ("api_base", "api_key"):
+                    continue
                 if overwrite or getattr(model, key, None) is None:
                     setattr(model, key, value)
 
@@ -909,6 +969,10 @@ def apply_overrides(
         models: List[LLMModelConfig] = []
         for spec in specs:
             provider, model_name, default_api_base, env_vars = _parse_model_spec(spec)
+            if is_local_provider(provider):
+                # No endpoint, no key: the local binary carries its own auth.
+                models.append(LLMModelConfig(name=model_name, provider=provider))
+                continue
             effective_base = api_base or default_api_base
             if effective_base is None:
                 raise ValueError(
@@ -921,18 +985,22 @@ def apply_overrides(
                     name=model_name,
                     api_base=effective_base,
                     api_key=resolved_key,
+                    provider=provider,
                 )
             )
 
-        config.llm.api_base = models[0].api_base
+        if models[0].api_base:
+            config.llm.api_base = models[0].api_base
         if models[0].api_key:
             config.llm.api_key = models[0].api_key
         config.llm.models = models
         config.llm.evaluator_models = [
-            LLMModelConfig(name=m.name, api_base=m.api_base, api_key=m.api_key) for m in models
+            LLMModelConfig(name=m.name, api_base=m.api_base, api_key=m.api_key, provider=m.provider)
+            for m in models
         ]
         config.llm.guide_models = [
-            LLMModelConfig(name=m.name, api_base=m.api_base, api_key=m.api_key) for m in models
+            LLMModelConfig(name=m.name, api_base=m.api_base, api_key=m.api_key, provider=m.provider)
+            for m in models
         ]
     elif api_base:
         config.llm.api_base = api_base

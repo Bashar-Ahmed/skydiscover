@@ -69,7 +69,13 @@ class AdaEvolveController(DiscoveryController):
         self.num_context_programs = self.config.search.num_context_programs
 
         # Components
-        self.llms = LLMPool(self.config.llm.models)
+        # Note: this replaces the pool built by super().__init__(); pass the
+        # same temperature-emulation settings so both behave identically.
+        self.llms = LLMPool(
+            self.config.llm.models,
+            self.config.llm.temperature_emulation,
+            self.config.llm.temperature,
+        )
         self.context_builder = AdaEvolveContextBuilder(self.config)
 
         # Paradigm generator (if paradigm breakthrough is enabled)

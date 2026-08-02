@@ -62,9 +62,16 @@ MOCK_RESPONSE_TEXT = f"```python\n{MOCK_LLM_CODE}```"
 class FakeLLMPool:
     """Drop-in replacement for LLMPool that returns a canned response."""
 
-    def __init__(self, models_cfg: List[LLMModelConfig]):
+    def __init__(
+        self,
+        models_cfg: List[LLMModelConfig],
+        temperature_emulation: Any = None,
+        temperature: Any = None,
+    ):
         # Intentionally do NOT create real clients.
         self.models_cfg = models_cfg
+        self.temperature_emulation = temperature_emulation
+        self.temperature = temperature
 
     async def generate(
         self, system_message: str, messages: List[Dict[str, Any]], **kwargs
