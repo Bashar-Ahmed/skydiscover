@@ -44,6 +44,15 @@ def prog_attr(program: Any, key: str, default: Any = "") -> Any:
     return default
 
 
+#: Readable prompt headings for artifact keys the framework writes itself.
+#: Anything else falls back to the raw key.
+_ARTIFACT_HEADINGS = {
+    "feedback": "Evaluator Feedback",
+    "regression_report": "Performance vs Parent",
+    "diagnosis": "Why This Under-Performed",
+}
+
+
 def format_artifacts(program: Any, heading: str = "##", max_len: int = 2000) -> str:
     """Format evaluator artifacts (e.g. feedback) into markdown sections."""
     artifacts = prog_attr(program, "artifacts", None)
@@ -56,10 +65,7 @@ def format_artifacts(program: Any, heading: str = "##", max_len: int = 2000) -> 
         text = str(value)
         if len(text) > max_len:
             text = text[:max_len] + "\n... (truncated)"
-        if key == "feedback":
-            sections.append(f"{heading} Evaluator Feedback\n{text}")
-        else:
-            sections.append(f"{heading} {key}\n{text}")
+        sections.append(f"{heading} {_ARTIFACT_HEADINGS.get(key, key)}\n{text}")
     if not sections:
         return ""
     return "\n" + "\n\n".join(sections) + "\n"

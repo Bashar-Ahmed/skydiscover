@@ -29,6 +29,7 @@ from skydiscover.config import Config
 from skydiscover.context_builder.base import ContextBuilder
 from skydiscover.context_builder.utils import TemplateManager, format_artifacts, prog_attr
 from skydiscover.search.base_database import Program
+from skydiscover.utils.diagnostics import describe_metric_deltas
 
 logger = logging.getLogger(__name__)
 
@@ -427,13 +428,23 @@ class DefaultContextBuilder(ContextBuilder):
 
     @staticmethod
     def _determine_outcome(program_metrics: Dict[str, Any], parent_metrics: Dict[str, Any]) -> str:
-        """Compare combined_score to parent: 'Improvement', 'Regression', or 'No change'."""
+        """Compare combined_score to parent: 'Improvement', 'Regression', or 'No change'.
+
+        A regression additionally names which metrics moved, so the model can
+        see *what* got worse rather than only *that* something did.  This is
+        the reliable surfacing path for diagnostics: unlike artifacts, which
+        render only for the program currently being mutated, previous attempts
+        are shown regardless of whether they are ever re-selected as parents.
+        """
         prog_value = program_metrics.get("combined_score")
         parent_value = parent_metrics.get("combined_score", 0)
         if isinstance(prog_value, (int, float)) and isinstance(parent_value, (int, float)):
             if prog_value > parent_value:
                 return "Improvement in combined_score"
             elif prog_value < parent_value:
+                deltas = describe_metric_deltas(program_metrics, parent_metrics, limit=3)
+                if deltas:
+                    return f"Regression in combined_score -- {deltas}"
                 return "Regression in combined_score"
         return "No change in combined_score"
 
