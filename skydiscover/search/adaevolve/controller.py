@@ -720,6 +720,14 @@ class AdaEvolveController(DiscoveryController):
         child_metadata = {"changes": changes, "parent_metrics": parent.metrics}
         if image_path:
             child_metadata["image_path"] = image_path
+        artifacts = await self._attach_diagnostics(
+            child_solution=child_solution,
+            child_metrics=metrics,
+            parent=parent,
+            changes_summary=changes,
+            artifacts=artifacts,
+            child_id=child_id,
+        )
         child = Program(
             id=child_id,
             solution=child_solution,

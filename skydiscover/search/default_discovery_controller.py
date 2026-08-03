@@ -19,6 +19,7 @@ from skydiscover.config import Config
 from skydiscover.context_builder.default import DefaultContextBuilder
 from skydiscover.context_builder.evox import EvoxContextBuilder
 from skydiscover.evaluation import create_evaluator
+from skydiscover.evaluation.diagnoser import SolutionDiagnoser
 from skydiscover.evaluation.llm_judge import LLMJudge
 from skydiscover.llm.base import LLMResponse
 from skydiscover.llm.llm_pool import LLMPool
@@ -30,6 +31,8 @@ from skydiscover.utils.code_utils import (
     format_diff_summary,
     parse_full_rewrite,
 )
+from skydiscover.utils.diagnostics import build_regression_report
+from skydiscover.utils.metrics import get_score
 
 logger = logging.getLogger(__name__)
 
@@ -713,6 +716,14 @@ class DiscoveryController:
             extra_meta = {}
             if image_path:
                 extra_meta["image_path"] = image_path
+            child_artifacts = await self._attach_diagnostics(
+                child_solution=child_solution,
+                child_metrics=child_metrics,
+                parent=parent,
+                changes_summary=changes_summary,
+                artifacts=child_eval_result.artifacts,
+                child_id=child_id,
+            )
             child_program = self._create_child_program(
                 child_id=child_id,
                 child_solution=child_solution,
@@ -724,7 +735,7 @@ class DiscoveryController:
                 iteration=iteration,
                 changes_summary=changes_summary,
                 extra_metadata=extra_meta if extra_meta else None,
-                artifacts=child_eval_result.artifacts,
+                artifacts=child_artifacts,
             )
             iteration_time = time.time() - iteration_start
 
@@ -851,6 +862,68 @@ class DiscoveryController:
                 )
                 return None, None, "No valid solution found in response"
             return new_solution, "Full rewrite", None
+
+    async def _attach_diagnostics(
+        self,
+        *,
+        child_solution: str,
+        child_metrics: Dict[str, Any],
+        parent: Program,
+        changes_summary: Optional[str],
+        artifacts: Optional[Dict[str, Any]],
+        child_id: str = "",
+    ) -> Dict[str, Any]:
+        """Explain a child that failed to beat its parent.
+
+        Returns the artifacts dict to store on the child: the evaluator's own
+        artifacts, plus ``regression_report`` (deterministic) and optionally
+        ``diagnosis`` (LLM).  Both are rendered into the prompt by
+        ``format_artifacts`` when this program is later mutated.
+
+        Shared by this controller and AdaEvolve's, which builds its child
+        programs itself rather than through ``_create_child_program``.  Never
+        raises: a missing explanation must not cost a evaluated program.
+        """
+        result = dict(artifacts or {})
+        evaluator_config = self.config.evaluator
+
+        if not getattr(evaluator_config, "diagnose_regressions", False):
+            return result
+
+        try:
+            report = build_regression_report(child_metrics, parent.metrics)
+        except Exception:
+            logger.debug("Regression report failed", exc_info=True)
+            return result
+
+        if not report:
+            return result  # improved, or nothing comparable to report
+        result["regression_report"] = report
+
+        if not getattr(evaluator_config, "llm_diagnosis", False):
+            return result
+
+        # A plateau needs no LLM: asking "why did this regress?" when the score
+        # is unchanged just gets back "it did not regress", at the cost of a
+        # generation. The deterministic report above already covers that case.
+        drop = get_score(parent.metrics or {}) - get_score(child_metrics or {})
+        if drop <= 0 or drop < getattr(evaluator_config, "llm_diagnosis_min_drop", 0.0):
+            return result
+
+        diagnoser = SolutionDiagnoser(self.evaluator_llms, self.database)
+        diagnosis = await diagnoser.diagnose(
+            child_solution=child_solution,
+            parent_solution=parent.solution,
+            child_metrics=child_metrics,
+            parent_metrics=parent.metrics or {},
+            changes_summary=changes_summary,
+            artifacts=result,
+            program_id=child_id,
+        )
+        if diagnosis:
+            result["diagnosis"] = diagnosis
+            logger.info(f"Diagnosed regression for {child_id}: {diagnosis[:120]}")
+        return result
 
     def _create_child_program(
         self,

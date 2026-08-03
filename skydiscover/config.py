@@ -399,6 +399,22 @@ class EvaluatorConfig:
     # This will read from prompt.evaluator_system_message if provided, otherwise use the default system prompt.
     llm_as_judge: bool = False
 
+    # Diagnostics: explain why a child failed to beat its parent.  The report
+    # is stored as an artifact on the child, so it persists in checkpoints and
+    # reaches the prompt when that program is next selected as a parent.
+    #
+    # Deterministic per-metric deltas.  No LLM calls, so it is on by default.
+    diagnose_regressions: bool = True
+    # Additionally ask an LLM *why* it regressed.  Off by default: it spends a
+    # generation per regressed iteration and the framework has no budget cap.
+    # Runs on llm.evaluator_models, which defaults to a shallow copy of
+    # llm.models -- set it explicitly to diagnose on a cheaper model.
+    llm_diagnosis: bool = False
+    # Only invoke the LLM when the score dropped by more than this. A strictly
+    # positive drop is always required regardless: a child that merely matched
+    # its parent gets the deterministic report but costs no generation.
+    llm_diagnosis_min_drop: float = 0.0
+
 
 # ═════════════════════════════════════════════════════════════════════════════════════════════
 # 4. Solution Selector — maintains database and strategy to pick prior programs (search/)
