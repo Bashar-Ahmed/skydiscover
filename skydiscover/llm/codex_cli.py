@@ -10,7 +10,7 @@ Model selection uses the ``codex_cli/`` provider prefix::
 
     llm:
       models:
-        - name: "codex_cli/gpt-5.6"
+        - name: "codex_cli/gpt-5.6-terra"
           weight: 1.0
 
 Usage limits are handled by :mod:`skydiscover.llm.rate_limit`: a rejected call
@@ -57,21 +57,28 @@ logger = logging.getLogger("skydiscover.llm")
 DEFAULT_CLI_BINARY = "codex"
 
 #: Values ``model_reasoning_effort`` accepts, weakest first.
-CLI_EFFORT_LEVELS: Tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
+#:
+#: Taken from ``~/.codex/models_cache.json`` (``supported_reasoning_levels``),
+#: not from the published docs, which still list a ``minimal`` rung that the API
+#: now rejects outright with ``unsupported_value``. The top of the ladder is
+#: model-dependent — ``ultra`` exists only on the largest models, and ``max``
+#: only on some — but Codex coerces a too-high level down to the nearest
+#: supported one, so sending one is safe while sending ``minimal`` is not.
+CLI_EFFORT_LEVELS: Tuple[str, ...] = ("low", "medium", "high", "xhigh", "max", "ultra")
 
-#: Effort spellings that have no direct Codex equivalent. "max" matters most:
-#: it is the top rung of the Claude CLI ladder and of
-#: :data:`skydiscover.llm.temperature.DEFAULT_EFFORT_LADDER`, so a shared
-#: temperature_emulation block must not break when it lands on this backend.
+#: Effort spellings that have no direct Codex equivalent. ``minimal`` matters
+#: most: OpenAI's own reasoning_effort vocabulary includes it and Codex does
+#: not, so it is mapped down rather than dropped — dropping it would silently
+#: promote the call to the model's default effort.
 _EFFORT_ALIASES = {
-    "none": "minimal",
+    "minimal": "low",
+    "none": "low",
     "default": "medium",
     "standard": "medium",
     "very_high": "xhigh",
     "extra_high": "xhigh",
     "extra-high": "xhigh",
-    "maximum": "xhigh",
-    "max": "xhigh",
+    "maximum": "max",
 }
 
 # Refuse to loop forever if a quota never clears.
@@ -302,9 +309,11 @@ class CodexCLILLM(LLMInterface):
             "--ignore-user-config",
             "--sandbox",
             SANDBOX_MODE,
-            # Never block for a human: this is a batch process.
-            "--ask-for-approval",
-            "never",
+            # Never block for a human: this is a batch process. `codex exec` has
+            # no --ask-for-approval flag (that is an interactive-mode option);
+            # the policy is only reachable as a config key.
+            "--config",
+            "approval_policy=never",
         ]
 
         model = kwargs.get("model", self.model)

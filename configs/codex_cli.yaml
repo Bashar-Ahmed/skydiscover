@@ -13,7 +13,7 @@
 #   uv run skydiscover-run initial_program.py evaluator.py -c configs/codex_cli.yaml
 #
 #   ...or without a config file:
-#   uv run skydiscover-run initial_program.py evaluator.py -m codex_cli/gpt-5.6
+#   uv run skydiscover-run initial_program.py evaluator.py -m codex_cli/gpt-5.6-terra
 
 max_iterations: 100
 checkpoint_interval: 10
@@ -21,9 +21,11 @@ log_level: "INFO"
 
 llm:
   models:
-    # The `codex_cli/` prefix selects this backend. The model is whatever your
-    # Codex install accepts (e.g. gpt-5.6, gpt-5.3-codex).
-    - name: "codex_cli/gpt-5.6"
+    # The `codex_cli/` prefix selects this backend. The model must be a slug
+    # your account actually offers — `cat ~/.codex/models_cache.json | jq
+    # '.models[].slug'` lists them. Bare family names like "gpt-5.6" are
+    # rejected ("not supported when using Codex with a ChatGPT account").
+    - name: "codex_cli/gpt-5.6-terra"
       weight: 1.0
 
   # The CLI exposes no sampling knob, so this value is NOT sent to the model;
@@ -51,9 +53,12 @@ llm:
     enabled: auto          # auto | true | false
     vary_model: true
     vary_effort: true
-    # Codex accepts minimal | low | medium | high | xhigh. (A ladder written for
-    # the Claude CLI also works: its "max" rung is mapped to xhigh.)
-    effort_ladder: ["minimal", "low", "medium", "high", "xhigh"]
+    # low | medium | high | xhigh | max, plus `ultra` on the largest models.
+    # The exact top rung is per-model (see supported_reasoning_levels in
+    # ~/.codex/models_cache.json), but Codex coerces a too-high level down to
+    # the nearest supported one. `minimal` is NOT accepted — it is rejected with
+    # `unsupported_value` despite still appearing in the published docs.
+    effort_ladder: ["low", "medium", "high", "xhigh", "max"]
     base_effort: "medium"  # the centre of the effort distribution
     effort_spread: 1.0     # ladder steps of jitter per unit of temperature
     max_temperature: 2.0
@@ -81,7 +86,7 @@ max_solution_length: 60000
 # crosses a rate-limit window survives it. Tune the ceiling per model entry:
 #
 #   models:
-#     - name: "codex_cli/gpt-5.6"
+#     - name: "codex_cli/gpt-5.6-terra"
 #       max_usage_limit_waits: 24   # consecutive pauses before giving up
 #
 # Other per-model options this backend understands:

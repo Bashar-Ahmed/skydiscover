@@ -165,29 +165,29 @@ class TestCodexCliRouting:
     def test_is_local(self, provider):
         assert is_local_provider(provider) is True
 
-    @pytest.mark.parametrize("name", ["codex_cli/gpt-5.6", "codex-cli/gpt-5.6"])
+    @pytest.mark.parametrize("name", ["codex_cli/gpt-5.6-terra", "codex-cli/gpt-5.6-terra"])
     def test_prefix_sets_provider_and_strips_name(self, name):
         model = LLMConfig(models=[LLMModelConfig(name=name)]).models[0]
         assert model.provider.replace("-", "_") == "codex_cli"
-        assert model.name == "gpt-5.6"
+        assert model.name == "gpt-5.6-terra"
 
     def test_no_api_base_or_key_is_invented(self):
-        cfg = LLMConfig(models=[LLMModelConfig(name="codex_cli/gpt-5.6")])
+        cfg = LLMConfig(models=[LLMModelConfig(name="codex_cli/gpt-5.6-terra")])
         for model in cfg.models + cfg.evaluator_models + cfg.guide_models:
             assert model.api_base is None
             assert model.api_key is None
 
     def test_detect_provider_from_unstripped_name(self):
-        assert _detect_provider(LLMModelConfig(name="codex_cli/gpt-5.6")) == "codex_cli"
+        assert _detect_provider(LLMModelConfig(name="codex_cli/gpt-5.6-terra")) == "codex_cli"
 
     def test_routes_to_codex_cli_backend(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda _b: "/usr/bin/codex")
-        backend = create_llm_backend(LLMModelConfig(name="gpt-5.6", provider="codex_cli"))
+        backend = create_llm_backend(LLMModelConfig(name="gpt-5.6-terra", provider="codex_cli"))
         assert type(backend).__name__ == "CodexCLILLM"
 
     def test_hyphenated_provider_also_routes_to_codex(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda _b: "/usr/bin/codex")
-        backend = create_llm_backend(LLMModelConfig(name="gpt-5.6", provider="codex-cli"))
+        backend = create_llm_backend(LLMModelConfig(name="gpt-5.6-terra", provider="codex-cli"))
         assert type(backend).__name__ == "CodexCLILLM"
 
     def test_claude_and_codex_do_not_cross_route(self, monkeypatch):
@@ -195,13 +195,13 @@ class TestCodexCliRouting:
         branch would send every CLI model to whichever backend came first."""
         monkeypatch.setattr(shutil, "which", lambda b: f"/usr/bin/{b}")
         claude = create_llm_backend(LLMModelConfig(name="sonnet", provider="claude_cli"))
-        codex = create_llm_backend(LLMModelConfig(name="gpt-5.6", provider="codex_cli"))
+        codex = create_llm_backend(LLMModelConfig(name="gpt-5.6-terra", provider="codex_cli"))
         assert type(claude).__name__ == "ClaudeCLILLM"
         assert type(codex).__name__ == "CodexCLILLM"
 
     def test_cli_model_override_does_not_require_api_base(self):
         config = Config()
-        apply_overrides(config, search=None, model="codex_cli/gpt-5.6")
+        apply_overrides(config, search=None, model="codex_cli/gpt-5.6-terra")
         assert config.llm.models[0].api_base is None
         assert config.llm.models[0].provider == "codex_cli"
 
@@ -209,12 +209,12 @@ class TestCodexCliRouting:
         cfg = LLMConfig(
             models=[
                 LLMModelConfig(name="claude_cli/opus"),
-                LLMModelConfig(name="codex_cli/gpt-5.6"),
+                LLMModelConfig(name="codex_cli/gpt-5.6-terra"),
                 LLMModelConfig(name="gpt-5"),
             ]
         )
         assert [m.provider for m in cfg.models] == ["claude_cli", "codex_cli", "openai"]
-        assert [m.name for m in cfg.models] == ["opus", "gpt-5.6", "gpt-5"]
+        assert [m.name for m in cfg.models] == ["opus", "gpt-5.6-terra", "gpt-5"]
         assert cfg.models[2].api_base is not None
 
     def test_yaml_template_loads(self):

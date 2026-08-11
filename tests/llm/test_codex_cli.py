@@ -24,7 +24,7 @@ from skydiscover.llm.rate_limit import UsageLimitError
 def backend(monkeypatch):
     """A CodexCLILLM whose binary lookup is stubbed out."""
     monkeypatch.setattr(shutil, "which", lambda _b: "/usr/bin/codex")
-    return CodexCLILLM(LLMModelConfig(name="codex_cli/gpt-5.6", timeout=60, retries=1))
+    return CodexCLILLM(LLMModelConfig(name="codex_cli/gpt-5.6-terra", timeout=60, retries=1))
 
 
 def jsonl(*events):
@@ -43,21 +43,28 @@ class TestEffortNormalization:
     @pytest.mark.parametrize(
         "given,expected",
         [
-            ("none", "minimal"),
+            ("none", "low"),
             ("MEDIUM", "medium"),
             ("extra_high", "xhigh"),
             ("extra-high", "xhigh"),
-            ("maximum", "xhigh"),
+            ("maximum", "max"),
         ],
     )
     def test_aliases(self, given, expected):
         assert normalize_effort(given) == expected
 
-    def test_max_maps_to_xhigh(self):
-        """`max` is the top rung of the shared temperature-emulation ladder and
-        of the Claude CLI, but Codex tops out at xhigh. It must not be dropped,
-        or emulated temperature would silently lose its highest setting."""
-        assert normalize_effort("max") == "xhigh"
+    def test_minimal_is_mapped_down_not_passed_through(self):
+        """Verified against a live CLI: `minimal` is rejected with
+        `unsupported_value`, despite still appearing in the published docs.
+        Mapping it down to `low` keeps the intent; dropping it would silently
+        promote the call to the model's default effort instead."""
+        assert normalize_effort("minimal") == "low"
+
+    def test_max_is_a_real_level(self):
+        """Regression: `max` was briefly mapped to `xhigh` on the strength of a
+        stale doc page. models_cache.json lists it as supported, so remapping it
+        would quietly cap emulated temperature below its top rung."""
+        assert normalize_effort("max") == "max"
 
     def test_every_shared_ladder_rung_is_usable(self):
         """The temperature emulator samples from DEFAULT_EFFORT_LADDER, which is
@@ -81,15 +88,15 @@ class TestConstruction:
     def test_missing_binary_raises_actionable_error(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda _b: None)
         with pytest.raises(RuntimeError, match="not found on PATH"):
-            CodexCLILLM(LLMModelConfig(name="codex_cli/gpt-5.6"))
+            CodexCLILLM(LLMModelConfig(name="codex_cli/gpt-5.6-terra"))
 
     @pytest.mark.parametrize(
         "name,expected",
         [
-            ("codex_cli/gpt-5.6", "gpt-5.6"),
-            ("codex-cli/gpt-5.6", "gpt-5.6"),
-            ("codex/gpt-5.6", "gpt-5.6"),
-            ("gpt-5.6", "gpt-5.6"),
+            ("codex_cli/gpt-5.6-terra", "gpt-5.6-terra"),
+            ("codex-cli/gpt-5.6-terra", "gpt-5.6-terra"),
+            ("codex/gpt-5.6-terra", "gpt-5.6-terra"),
+            ("gpt-5.6-terra", "gpt-5.6-terra"),
         ],
     )
     def test_provider_prefix_stripped(self, monkeypatch, name, expected):
@@ -98,14 +105,14 @@ class TestConstruction:
 
     def test_temperature_is_never_sent(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda _b: "/usr/bin/codex")
-        backend = CodexCLILLM(LLMModelConfig(name="codex_cli/gpt-5.6", temperature=0.9))
+        backend = CodexCLILLM(LLMModelConfig(name="codex_cli/gpt-5.6-terra", temperature=0.9))
         assert backend.temperature is None
         assert backend.top_p is None
 
     def test_binary_override_from_env(self, monkeypatch):
         monkeypatch.setenv("SKYDISCOVER_CODEX_BINARY", "/opt/codex")
         monkeypatch.setattr(shutil, "which", lambda b: b)
-        assert CodexCLILLM(LLMModelConfig(name="codex_cli/gpt-5.6")).binary == "/opt/codex"
+        assert CodexCLILLM(LLMModelConfig(name="codex_cli/gpt-5.6-terra")).binary == "/opt/codex"
 
 
 class TestCommandBuilding:
@@ -115,7 +122,15 @@ class TestCommandBuilding:
         for flag in ("--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config"):
             assert flag in cmd
         assert cmd[cmd.index("--sandbox") + 1] == "read-only"
-        assert cmd[cmd.index("--ask-for-approval") + 1] == "never"
+
+    def test_approval_policy_is_a_config_key_not_a_flag(self, backend):
+        """Regression: `codex exec` has no --ask-for-approval flag — that is an
+        interactive-mode option — and clap rejects the whole invocation with
+        'unexpected argument', so every call would have failed."""
+        cmd = backend._build_command(None)
+        assert "--ask-for-approval" not in cmd
+        assert "approval_policy=never" in cmd
+        assert cmd[cmd.index("approval_policy=never") - 1] == "--config"
 
     def test_prompt_is_read_from_stdin(self, backend):
         """A prompt carrying a whole program is not a comfortable argv entry."""
@@ -123,17 +138,20 @@ class TestCommandBuilding:
 
     def test_model_flag(self, backend):
         cmd = backend._build_command(None)
-        assert cmd[cmd.index("--model") + 1] == "gpt-5.6"
+        assert cmd[cmd.index("--model") + 1] == "gpt-5.6-terra"
 
     def test_effort_uses_a_config_override(self, backend):
         cmd = backend._build_command(None, reasoning_effort="high")
-        assert cmd[cmd.index("--config") + 1] == "model_reasoning_effort=high"
+        assert "model_reasoning_effort=high" in cmd
+        assert cmd[cmd.index("model_reasoning_effort=high") - 1] == "--config"
 
     def test_invalid_effort_is_omitted(self, backend):
-        assert "--config" not in backend._build_command(None, reasoning_effort="turbo")
+        cmd = backend._build_command(None, reasoning_effort="turbo")
+        assert not any(a.startswith("model_reasoning_effort=") for a in cmd)
 
-    def test_no_effort_flag_by_default(self, backend):
-        assert "--config" not in backend._build_command(None)
+    def test_no_effort_override_by_default(self, backend):
+        cmd = backend._build_command(None)
+        assert not any(a.startswith("model_reasoning_effort=") for a in cmd)
 
     def test_output_schema_flag(self, backend):
         cmd = backend._build_command("/tmp/schema.json")
@@ -142,7 +160,7 @@ class TestCommandBuilding:
     def test_extra_args_are_appended_before_the_stdin_sentinel(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda _b: "/usr/bin/codex")
         backend = CodexCLILLM(
-            LLMModelConfig(name="codex_cli/gpt-5.6", cli_extra_args=["--color", "never"])
+            LLMModelConfig(name="codex_cli/gpt-5.6-terra", cli_extra_args=["--color", "never"])
         )
         cmd = backend._build_command(None)
         assert cmd[-3:] == ["--color", "never", "-"]
@@ -158,9 +176,9 @@ class TestCommandBuilding:
 
 class TestWorkingDirectory:
     def test_agentic_runs_from_the_codebase_root(self, backend, tmp_path):
-        assert backend._resolve_cwd(
-            "/tmp/work", agentic=True, codebase_root=str(tmp_path)
-        ) == str(tmp_path)
+        assert backend._resolve_cwd("/tmp/work", agentic=True, codebase_root=str(tmp_path)) == str(
+            tmp_path
+        )
 
     def test_agentic_falls_back_to_workdir_without_a_valid_root(self, backend):
         assert backend._resolve_cwd("/tmp/work", agentic=True, codebase_root="/no/such") == (

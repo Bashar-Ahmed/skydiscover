@@ -96,7 +96,7 @@ uv run skydiscover-run prog.py evaluator.py -c configs/claude_cli.yaml
 
 codex login                                          # once
 uv run skydiscover-run prog.py evaluator.py -c configs/codex_cli.yaml
-# or:  -m codex_cli/gpt-5.6
+# or:  -m codex_cli/gpt-5.6-terra
 ```
 
 They are not interchangeable in every respect — Codex has no system-prompt

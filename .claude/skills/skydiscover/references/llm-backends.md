@@ -80,7 +80,7 @@ auth, no HTTP, nothing containerized. Template: `configs/codex_cli.yaml`.
 ```yaml
 llm:
   models:
-    - name: "codex_cli/gpt-5.6"
+    - name: "codex_cli/gpt-5.6-terra"
       weight: 1.0
 ```
 
@@ -88,9 +88,20 @@ Setup: install Codex, run `codex login` once. No `OPENAI_API_KEY`.
 
 Every call is:
 `codex exec --json --skip-git-repo-check --ephemeral --ignore-user-config
---sandbox read-only --ask-for-approval never [--model M]
+--sandbox read-only --config approval_policy=never [--model M]
 [--config model_reasoning_effort=E] [--output-schema F] -`
 with the prompt on **stdin** (the trailing `-`).
+
+⚠️ **`codex exec` has no `--ask-for-approval` flag** — that is interactive-mode
+only, and passing it makes clap reject the whole invocation. The policy is
+reachable only as a config key. It is load-bearing: `codex doctor` reports the
+default as `OnRequest`, which would block a batch run.
+
+⚠️ **The model must be a slug the account actually offers.** A bare family name
+like `gpt-5.6` fails with *"not supported when using Codex with a ChatGPT
+account"*. List them with
+`jq '.models[].slug' ~/.codex/models_cache.json` (e.g. `gpt-5.6-terra`,
+`gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4-mini`).
 
 **Three differences from the Claude CLI backend, all forced by the tool:**
 
@@ -109,10 +120,16 @@ reach the network in either mode.
 narration; `reasoning` and `command_execution` items are skipped).
 `turn.completed.usage` feeds the tracker; `turn.failed` / `error` raise.
 
-**Effort** is `minimal|low|medium|high|xhigh`, passed as
-`--config model_reasoning_effort=…`. `max` — the top rung of the Claude ladder
-and of `DEFAULT_EFFORT_LADDER` — maps to `xhigh`, so one
-`temperature_emulation` block works across both backends.
+**Effort** is `low|medium|high|xhigh|max` (+`ultra` on the largest models),
+passed as `--config model_reasoning_effort=…`. That matches
+`DEFAULT_EFFORT_LADDER`, so one `temperature_emulation` block works across both
+CLI backends unchanged.
+
+⚠️ The published docs still list a **`minimal`** rung. It is gone — the API
+rejects it with `unsupported_value`. `normalize_effort` maps it down to `low`.
+The authoritative per-model list is `supported_reasoning_levels` in
+`~/.codex/models_cache.json`; a too-high level is coerced down by Codex, so only
+the bottom of the ladder is dangerous.
 
 Per-model options: `cli_binary` (or `$SKYDISCOVER_CODEX_BINARY`),
 `cli_extra_args`, `max_usage_limit_waits`. **`max_budget_usd` and
