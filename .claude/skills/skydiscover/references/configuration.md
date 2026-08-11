@@ -67,8 +67,10 @@ configs and is silently dropped — `Config` has no such field.
 | `temperature_emulation` | `{}` | see `llm-backends.md` |
 
 Per-model extras (also settable per entry in `models`): `api_base`, `api_key`,
-`provider`, `weight`, `max_usage_limit_waits`, and the Claude-CLI-only
-`cli_binary`, `cli_extra_args`, `max_budget_usd`, `fallback_model`.
+`provider`, `weight`, `max_usage_limit_waits`; `cli_binary` / `cli_extra_args`
+for either local CLI backend; and the Claude-CLI-only `max_budget_usd` /
+`fallback_model` (Codex reports no cost and has no fallback flag, so it ignores
+both).
 
 `LLMConfig.__post_init__` resolves each model's provider from the name prefix,
 fills `api_base`/`api_key`, and strips the `provider/` prefix from the name —
@@ -154,6 +156,7 @@ regardless of `human_feedback_enabled` (`Runner._setup_human_feedback` gates on
 | `huggingface` | **none** → `api_base` required | `HF_TOKEN`, `HUGGINGFACE_API_KEY` |
 | `ollama` / `vllm` | **none** → `api_base` is required, else `apply_overrides` raises | — |
 | `claude_cli` / `claude-cli` | **none needed** | none — auth comes from `claude auth` |
+| `codex_cli` / `codex-cli` | **none needed** | none — auth comes from `codex login` |
 
 All key lookups fall back to `OPENAI_API_KEY`.
 

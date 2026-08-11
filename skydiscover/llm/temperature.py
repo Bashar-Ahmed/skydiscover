@@ -78,12 +78,15 @@ _NO_TEMPERATURE_RE = re.compile("|".join(_NO_TEMPERATURE_PATTERNS), re.IGNORECAS
 
 def model_supports_temperature(name: Optional[str], provider: Optional[str] = None) -> bool:
     """Whether *name* still accepts a ``temperature`` request parameter."""
-    if (provider or "").lower() in ("claude_cli", "claude-cli"):
-        # The CLI exposes no sampling parameters whatsoever.
+    if (provider or "").lower() in ("claude_cli", "claude-cli", "codex_cli", "codex-cli"):
+        # Neither CLI exposes any sampling parameter.
         return False
     if not name:
         return True
     bare = name.split("/")[-1].strip().lower()
+    # A bare name still carrying a local-CLI prefix (provider not yet resolved).
+    if name.strip().lower().startswith(("claude_cli/", "claude-cli/", "codex_cli/", "codex-cli/")):
+        return False
     return not _NO_TEMPERATURE_RE.match(bare)
 
 

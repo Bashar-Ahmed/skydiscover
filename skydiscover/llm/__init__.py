@@ -29,13 +29,18 @@ __all__ = [
     "TemperatureEmulator",
     "model_supports_temperature",
     "ClaudeCLILLM",
+    "CodexCLILLM",
 ]
 
 
 def __getattr__(name: str):
-    # Lazy so importing skydiscover.llm does not probe for the `claude` binary.
+    # Lazy so importing skydiscover.llm does not probe for a CLI binary.
     if name == "ClaudeCLILLM":
         from skydiscover.llm.claude_cli import ClaudeCLILLM
 
         return ClaudeCLILLM
+    if name == "CodexCLILLM":
+        from skydiscover.llm.codex_cli import CodexCLILLM
+
+        return CodexCLILLM
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

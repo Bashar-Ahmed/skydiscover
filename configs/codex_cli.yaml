@@ -1,0 +1,104 @@
+# Run SkyDiscover against a ChatGPT subscription via the Codex CLI instead of a
+# metered API key.
+#
+# Prerequisites:
+#   1. Install Codex:      https://developers.openai.com/codex
+#   2. Authenticate once:  codex login
+#   3. Verify:             codex exec --skip-git-repo-check "say hi"
+#
+# No OPENAI_API_KEY is needed — the CLI carries its own credentials. Nothing is
+# containerized: the binary runs directly on this machine, once per LLM call.
+#
+# Usage:
+#   uv run skydiscover-run initial_program.py evaluator.py -c configs/codex_cli.yaml
+#
+#   ...or without a config file:
+#   uv run skydiscover-run initial_program.py evaluator.py -m codex_cli/gpt-5.6
+
+max_iterations: 100
+checkpoint_interval: 10
+log_level: "INFO"
+
+llm:
+  models:
+    # The `codex_cli/` prefix selects this backend. The model is whatever your
+    # Codex install accepts (e.g. gpt-5.6, gpt-5.3-codex).
+    - name: "codex_cli/gpt-5.6"
+      weight: 1.0
+
+  # The CLI exposes no sampling knob, so this value is NOT sent to the model;
+  # it drives the emulation block below. It keeps its usual meaning:
+  #   0.0 → fully deterministic     1.0 → configured behaviour     2.0 → maximally diverse
+  temperature: 0.7
+
+  max_tokens: 32000
+
+  # Per-call wall clock. The CLI is slower than a raw API call because it boots
+  # an agent process per request; 600s leaves room for high-effort generations.
+  timeout: 600
+  retries: 3
+  retry_delay: 5
+
+  # ── Temperature emulation ───────────────────────────────────────────
+  # Reconstructs the explore/exploit dial that `temperature` used to provide,
+  # using the two knobs the CLI does expose: which model is sampled, and how
+  # much reasoning effort each call is given.
+  #
+  #   model  : pool weights are reshaped as p_i ∝ w_i**(1/T)
+  #   effort : drawn from a discrete Gaussian over effort_ladder centred on
+  #            base_effort with sigma = T * effort_spread.
+  temperature_emulation:
+    enabled: auto          # auto | true | false
+    vary_model: true
+    vary_effort: true
+    # Codex accepts minimal | low | medium | high | xhigh. (A ladder written for
+    # the Claude CLI also works: its "max" rung is mapped to xhigh.)
+    effort_ladder: ["minimal", "low", "medium", "high", "xhigh"]
+    base_effort: "medium"  # the centre of the effort distribution
+    effort_spread: 1.0     # ladder steps of jitter per unit of temperature
+    max_temperature: 2.0
+
+search:
+  type: "adaevolve"
+  num_context_programs: 4
+
+prompt:
+  system_message: |
+    You are an expert at designing and optimizing algorithms.
+    Reply with SEARCH/REPLACE diff blocks only.
+
+evaluator:
+  timeout: 600
+  cascade_evaluation: false
+
+diff_based_generation: true
+max_solution_length: 60000
+
+# ── Notes on usage limits ─────────────────────────────────────────────
+# When the plan's quota is exhausted, SkyDiscover parses the reset time out of
+# the CLI's response and pauses every LLM call until it passes, then resumes the
+# same iteration. A quota pause does not consume the retry budget, so a run that
+# crosses a rate-limit window survives it. Tune the ceiling per model entry:
+#
+#   models:
+#     - name: "codex_cli/gpt-5.6"
+#       max_usage_limit_waits: 24   # consecutive pauses before giving up
+#
+# Other per-model options this backend understands:
+#   cli_binary: "/path/to/codex"    # defaults to `codex` on PATH
+#                                   # (or $SKYDISCOVER_CODEX_BINARY)
+#   cli_extra_args: ["--color", "never"]   # appended verbatim to every call
+#
+# `max_budget_usd` and `fallback_model` are Claude-CLI-only: Codex reports no
+# cost and has no fallback flag, so both are ignored here.
+#
+# ── How this backend differs from claude_cli ──────────────────────────
+# * No system-prompt channel. `codex exec` takes one prompt, so the system
+#   message is prepended to it under an "# Instructions" header.
+# * No way to disable tools. Codex is a coding agent and always has its shell;
+#   there is no `--tools ""` equivalent. Every call runs under
+#   `--sandbox read-only` with `--ask-for-approval never`, and non-agentic calls
+#   run from an empty temp directory so there is nothing there to read. The
+#   model cannot write files or reach the network in either mode.
+# * `--ignore-user-config` is always passed, so whatever is in your
+#   ~/.codex/config.toml cannot silently redefine a run.

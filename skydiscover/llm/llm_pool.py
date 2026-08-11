@@ -26,6 +26,9 @@ def _detect_provider(model_cfg: LLMModelConfig) -> str:
     for prefix in ("claude_cli/", "claude-cli/"):
         if name.startswith(prefix):
             return "claude_cli"
+    for prefix in ("codex_cli/", "codex-cli/"):
+        if name.startswith(prefix):
+            return "codex_cli"
     return ""
 
 
@@ -36,8 +39,14 @@ def create_llm_backend(model_cfg: LLMModelConfig) -> LLMInterface:
 
     provider = _detect_provider(model_cfg)
     if is_local_provider(provider):
-        # Imported lazily: constructing it probes for the `claude` binary, and
-        # runs that never use the CLI should not pay that cost or that failure.
+        # Imported lazily: constructing either backend probes for its binary,
+        # and runs that never use a CLI should not pay that cost or that
+        # failure.
+        if provider.replace("-", "_") == "codex_cli":
+            from skydiscover.llm.codex_cli import CodexCLILLM
+
+            return CodexCLILLM(model_cfg)
+
         from skydiscover.llm.claude_cli import ClaudeCLILLM
 
         return ClaudeCLILLM(model_cfg)

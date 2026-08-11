@@ -86,13 +86,21 @@ Python API: `run_discovery(evaluator, initial_program=None, ...) -> DiscoveryRes
 — **note `evaluator` is first and required**. `discover_solution()` is a thin
 wrapper accepting inline strings and callables.
 
-**Using a Claude subscription instead of an API key:**
+**Using a subscription instead of an API key** — two local-CLI backends, both
+driving a binary on this host rather than an HTTP endpoint:
 
 ```bash
 claude auth login                                    # once (bare `claude auth` only prints help)
 uv run skydiscover-run prog.py evaluator.py -c configs/claude_cli.yaml
 # or:  -m claude_cli/sonnet
+
+codex login                                          # once
+uv run skydiscover-run prog.py evaluator.py -c configs/codex_cli.yaml
+# or:  -m codex_cli/gpt-5.6
 ```
+
+They are not interchangeable in every respect — Codex has no system-prompt
+channel and no way to disable its tools. See `references/llm-backends.md`.
 
 Outputs land in `outputs/<search_type>/<problem>_<MMDD_HHMM>/`:
 `logs/`, `checkpoints/checkpoint_<n>/`, `best/best_program*`. Resume with
@@ -110,7 +118,7 @@ iteration — see `references/gotchas.md`.
 | Add or run a benchmark | `references/benchmarks.md` |
 | Write an evaluator | `references/evaluation.md` |
 | Any config question | `references/configuration.md` |
-| LLM backends, Claude CLI, rate limits, temperature | `references/llm-backends.md` |
+| LLM backends, Claude/Codex CLI, rate limits, temperature | `references/llm-backends.md` |
 | Something is behaving oddly | `references/gotchas.md` |
 
 ## Newcomer reading order
@@ -151,8 +159,9 @@ iteration — see `references/gotchas.md`.
   them automatically** — `addopts` is only `--strict-markers` and there is no
   `conftest.py`, so you must pass `-m "not integration"` yourself. CI does not.
 - There is **no cost model or budget cap** for API backends; `response.usage` is
-  never read. The Claude CLI backend is the exception — it records cost and
-  tokens (`llm/claude_cli.py::GLOBAL_COST_TRACKER`).
+  never read. The CLI backends are the exception — Claude records cost and
+  tokens (`llm/claude_cli.py::GLOBAL_COST_TRACKER`), Codex records tokens only
+  (`llm/codex_cli.py::GLOBAL_USAGE_TRACKER`; it reports no cost).
 - **Guard against evaluator overfitting.** The loop maximises exactly what the
   evaluator returns, so a candidate that memorises the fixed test vectors scores
   as well as a real algorithm. Declare `mode` on your `evaluate()` and score a

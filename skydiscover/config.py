@@ -38,11 +38,14 @@ _PROVIDERS: Dict[str, tuple] = {
     # has neither a base URL nor an API key: auth comes from `claude auth`.
     "claude_cli": (None, []),
     "claude-cli": (None, []),
+    # Likewise for the local `codex` binary: auth comes from `codex login`.
+    "codex_cli": (None, []),
+    "codex-cli": (None, []),
 }
 
 # Providers backed by a local executable. They must not be asked for an
 # api_base, and resolving an API key for them would be misleading.
-_LOCAL_PROVIDERS = {"claude_cli", "claude-cli"}
+_LOCAL_PROVIDERS = {"claude_cli", "claude-cli", "codex_cli", "codex-cli"}
 
 # Default model when a config names none.  Pinned to Opus 5 by full name rather
 # than the floating "opus" alias so a run is reproducible.  Driven by the local
@@ -174,13 +177,16 @@ class LLMModelConfig:
     # up. Applies to every backend.
     max_usage_limit_waits: Optional[int] = None
 
-    # ── Claude Code CLI backend (provider "claude_cli") ────────────────
-    # Path to the `claude` binary; defaults to the one on PATH (or
-    # $SKYDISCOVER_CLAUDE_BINARY).
+    # ── Local CLI backends ("claude_cli" / "codex_cli") ────────────────
+    # Path to the CLI binary; defaults to the one on PATH (or
+    # $SKYDISCOVER_CLAUDE_BINARY / $SKYDISCOVER_CODEX_BINARY).
     cli_binary: Optional[str] = None
     # Extra arguments appended verbatim to every CLI invocation.
     cli_extra_args: Optional[List[str]] = None
-    # Hard spend ceiling passed through as --max-budget-usd.
+
+    # ── Claude Code CLI only ───────────────────────────────────────────
+    # Hard spend ceiling passed through as --max-budget-usd. Codex reports no
+    # cost and has no equivalent flag, so it ignores this.
     max_budget_usd: Optional[float] = None
     # Model used when the primary is overloaded (--fallback-model).
     fallback_model: Optional[str] = None

@@ -5,8 +5,9 @@
 `llm/llm_pool.py::create_llm_backend(model_cfg)`:
 
 1. `model_cfg.init_client` if set (Python-API only, not expressible in YAML).
-2. `is_local_provider(provider)` → `ClaudeCLILLM` (imported lazily, so runs that
-   never use the CLI don't probe for the binary).
+2. `is_local_provider(provider)` → a CLI backend, chosen by provider:
+   `codex_cli` → `CodexCLILLM`, otherwise `ClaudeCLILLM`. Both are imported
+   lazily, so runs that never use a CLI don't probe for its binary.
 3. otherwise `OpenAILLM`.
 
 `LLMModelConfig.provider` is filled from the model name's `provider/` prefix by
@@ -70,6 +71,55 @@ tracks its own `cost_usd` scraped from the CLI's JSON stream.)
 Not supported: image generation (`language: image` needs an OpenAI-compatible
 model).
 
+## `CodexCLILLM` — ChatGPT subscription, no API key
+
+`llm/codex_cli.py`. Drives the locally installed `codex` binary via
+`codex exec`. Same shape as the Claude CLI backend — local binary, subscription
+auth, no HTTP, nothing containerized. Template: `configs/codex_cli.yaml`.
+
+```yaml
+llm:
+  models:
+    - name: "codex_cli/gpt-5.6"
+      weight: 1.0
+```
+
+Setup: install Codex, run `codex login` once. No `OPENAI_API_KEY`.
+
+Every call is:
+`codex exec --json --skip-git-repo-check --ephemeral --ignore-user-config
+--sandbox read-only --ask-for-approval never [--model M]
+[--config model_reasoning_effort=E] [--output-schema F] -`
+with the prompt on **stdin** (the trailing `-`).
+
+**Three differences from the Claude CLI backend, all forced by the tool:**
+
+| | Claude CLI | Codex CLI |
+|---|---|---|
+| System prompt | `--system-prompt-file` | none — folded into the prompt under an `# Instructions` header |
+| Tools off | `--tools "" --max-turns 1` | **impossible**; constrained by `--sandbox read-only` + an empty temp cwd |
+| Cost | `total_cost_usd` per call | tokens only (`GLOBAL_USAGE_TRACKER`) |
+
+So "non-agentic" here means *no useful context to explore*, not *no tools*:
+Codex is a coding agent and always has its shell. It can never write files or
+reach the network in either mode.
+
+**Output is JSONL, not a single object.** The answer is the **last**
+`item.completed` whose `item.type == "agent_message"` (earlier ones are progress
+narration; `reasoning` and `command_execution` items are skipped).
+`turn.completed.usage` feeds the tracker; `turn.failed` / `error` raise.
+
+**Effort** is `minimal|low|medium|high|xhigh`, passed as
+`--config model_reasoning_effort=…`. `max` — the top rung of the Claude ladder
+and of `DEFAULT_EFFORT_LADDER` — maps to `xhigh`, so one
+`temperature_emulation` block works across both backends.
+
+Per-model options: `cli_binary` (or `$SKYDISCOVER_CODEX_BINARY`),
+`cli_extra_args`, `max_usage_limit_waits`. **`max_budget_usd` and
+`fallback_model` are Claude-CLI-only** and are ignored here.
+
+Not supported: image generation.
+
 ## Usage limits — wait, don't skip
 
 `llm/rate_limit.py`. A quota rejection is treated as **scheduled downtime**: the
@@ -109,7 +159,9 @@ pattern.
 `llm/temperature.py`. Sampling parameters were removed starting with **Claude
 Opus 4.7** — rejected with a 400 on Opus 4.7/4.8, Opus 5, Sonnet 5, Fable 5,
 Mythos 5 — while **Opus 4.6, Sonnet 4.6, and the entire 4.5 family still accept
-them**. The Claude Code CLI exposes no sampling knob at all.
+them**. Neither the Claude Code CLI nor the Codex CLI exposes a sampling knob at
+all, so `model_supports_temperature` returns `False` for both providers and
+`enabled: auto` activates emulation for them.
 
 That matters here because diversity-per-iteration is a first-class search
 parameter: AdaEvolve and EvoX both steer it. So `llm.temperature` is
@@ -150,8 +202,8 @@ so a stale config value can't 400 a run.
 `llm/agentic_generator.py::AgenticGenerator` — a bounded ReAct loop over two
 sandboxed tools (`read_file`, `search`, schemas in `llm/tool_schemas/`).
 
-- If the sampled backend advertises `supports_native_agentic` (the Claude CLI),
-  the whole loop is delegated to it instead.
+- If the sampled backend advertises `supports_native_agentic` (both CLI
+  backends), the whole loop is delegated to it instead.
 - Otherwise it calls the raw OpenAI client directly — **it does not go through
   `OpenAILLM._generate_text`**, so anything added there (retries, downgrades)
   must be added here too.
