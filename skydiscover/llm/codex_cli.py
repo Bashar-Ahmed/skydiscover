@@ -106,6 +106,48 @@ def normalize_effort(effort: Optional[str]) -> Optional[str]:
     return None
 
 
+#: Where the CLI caches the model list it fetched for this account.
+MODELS_CACHE_FILENAME = "models_cache.json"
+
+
+def available_models(codex_home: Optional[str] = None) -> List[str]:
+    """Model slugs this account can actually select, best-first.
+
+    Read from the CLI's own ``models_cache.json`` rather than hardcoded: the
+    list is per-account and moves quickly (three slugs appeared and one model
+    family was superseded within a single week), so a baked-in list would be
+    wrong almost immediately. Entries marked ``visibility: hide`` are internal —
+    ``codex-auto-review`` is the approval-review model, not something to evolve
+    with — and are left out.
+
+    Returns an empty list if the cache is missing or unreadable, which callers
+    must treat as "unknown", never as "no models".
+    """
+    home = (
+        codex_home
+        or os.environ.get("CODEX_HOME")
+        or os.path.join(os.path.expanduser("~"), ".codex")
+    )
+    try:
+        with open(os.path.join(home, MODELS_CACHE_FILENAME), encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    entries = payload.get("models")
+    if not isinstance(entries, list):
+        return []
+
+    listed = [
+        m
+        for m in entries
+        if isinstance(m, dict) and m.get("slug") and m.get("visibility") != "hide"
+    ]
+    # `priority` orders the CLI's own picker; lower is better.
+    listed.sort(key=lambda m: m.get("priority", 1_000_000))
+    return [m["slug"] for m in listed]
+
+
 class UsageTracker:
     """Process-wide tally of the tokens Codex reports using.
 
@@ -199,6 +241,7 @@ class CodexCLILLM(LLMInterface):
                 f"SKYDISCOVER_CODEX_BINARY to its absolute path."
             )
         self.binary = resolved
+        self._warn_if_model_unknown()
 
         # temperature is meaningless here: the CLI exposes no sampling knob.
         # skydiscover.llm.temperature emulates it via model/effort instead.
@@ -216,6 +259,33 @@ class CodexCLILLM(LLMInterface):
                 self.binary,
             )
             logger._initialized_models.add(key)
+
+    def _warn_if_model_unknown(self) -> None:
+        """Flag a model slug this account does not offer, at construction time.
+
+        A wrong slug is not rejected until the first generation, and then only
+        as an opaque 400 ("not supported when using Codex with a ChatGPT
+        account") several retries deep. Since the valid names are unguessable —
+        the family name `gpt-5.6` is invalid while `gpt-5.6-sol` is not — a run
+        can burn its first iterations on a typo.
+
+        This warns rather than raises: the cache is written by the CLI, not by
+        us, so an empty or stale one must not be able to block a model that
+        actually works.
+        """
+        if not self.model:
+            return
+        known = available_models()
+        if not known or self.model in known:
+            return
+        logger.warning(
+            "Codex model %r is not in this account's model list (%s). "
+            "The CLI will likely reject it; run `codex exec` once to refresh "
+            "%s, or pick one of the listed slugs.",
+            self.model,
+            ", ".join(known),
+            MODELS_CACHE_FILENAME,
+        )
 
     # ------------------------------------------------------------------
     # LLMInterface

@@ -80,7 +80,7 @@ auth, no HTTP, nothing containerized. Template: `configs/codex_cli.yaml`.
 ```yaml
 llm:
   models:
-    - name: "codex_cli/gpt-5.6-terra"
+    - name: "codex_cli/gpt-5.6-sol"
       weight: 1.0
 ```
 
@@ -99,9 +99,31 @@ default as `OnRequest`, which would block a batch run.
 
 ⚠️ **The model must be a slug the account actually offers.** A bare family name
 like `gpt-5.6` fails with *"not supported when using Codex with a ChatGPT
-account"*. List them with
-`jq '.models[].slug' ~/.codex/models_cache.json` (e.g. `gpt-5.6-terra`,
-`gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4-mini`).
+account"* — the names are unguessable, and the list is per-account and moves
+fast (three slugs appeared in one week). It is therefore **never hardcoded**:
+`codex_cli.py::available_models()` reads `$CODEX_HOME/models_cache.json`
+(default `~/.codex`), drops `visibility: hide` entries (`codex-auto-review` is
+the approval-review model), and sorts by the CLI's own `priority`.
+
+`CodexCLILLM.__init__` **warns** — never raises — when the configured slug is
+not in that list, naming the valid ones. Warning rather than raising is
+deliberate: the cache belongs to the CLI, so a stale or missing one must not be
+able to block a model that works. An empty list means "unknown", not "none".
+
+As of writing, this account offers:
+
+| slug | notes | top effort |
+|---|---|---|
+| `gpt-5.6-sol` | latest frontier agentic model | `ultra` |
+| `gpt-5.6-terra` | balanced, everyday work | `ultra` |
+| `gpt-5.6-luna` | fast and affordable | `max` |
+| `gpt-5.5` | frontier: complex coding + research | `xhigh` |
+| `gpt-5.4` | strong everyday coding | `xhigh` |
+| `gpt-5.4-mini` | small, fast, cost-efficient | `xhigh` |
+| `gpt-5.3-codex-spark` | ultra-fast, **128k** context (others are 272k) | `xhigh` |
+
+Note `vary_model` in `temperature_emulation` reshapes the *pool* weights, so it
+is inert with a single model configured — list several to make that axis live.
 
 **Three differences from the Claude CLI backend, all forced by the tool:**
 

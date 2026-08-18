@@ -13,7 +13,7 @@
 #   uv run skydiscover-run initial_program.py evaluator.py -c configs/codex_cli.yaml
 #
 #   ...or without a config file:
-#   uv run skydiscover-run initial_program.py evaluator.py -m codex_cli/gpt-5.6-terra
+#   uv run skydiscover-run initial_program.py evaluator.py -m codex_cli/gpt-5.6-sol
 
 max_iterations: 100
 checkpoint_interval: 10
@@ -21,12 +21,39 @@ log_level: "INFO"
 
 llm:
   models:
-    # The `codex_cli/` prefix selects this backend. The model must be a slug
-    # your account actually offers — `cat ~/.codex/models_cache.json | jq
-    # '.models[].slug'` lists them. Bare family names like "gpt-5.6" are
-    # rejected ("not supported when using Codex with a ChatGPT account").
-    - name: "codex_cli/gpt-5.6-terra"
+    # The `codex_cli/` prefix selects this backend.
+    - name: "codex_cli/gpt-5.6-sol"
       weight: 1.0
+
+    # ── Which slugs are valid ────────────────────────────────────────
+    # Per-account, and they move fast. Authoritative list:
+    #   jq -r '.models[] | select(.visibility != "hide") | .slug' \
+    #      ~/.codex/models_cache.json
+    # A bare family name like "gpt-5.6" is NOT valid and is rejected with
+    # "not supported when using Codex with a ChatGPT account". SkyDiscover
+    # warns at startup if the slug is not in that list.
+    #
+    #   slug                  notes                              max effort
+    #   gpt-5.6-sol           latest frontier agentic model      ultra
+    #   gpt-5.6-terra         balanced, for everyday work        ultra
+    #   gpt-5.6-luna          fast and affordable                max
+    #   gpt-5.5               frontier, complex coding/research  xhigh
+    #   gpt-5.4               strong everyday coding             xhigh
+    #   gpt-5.4-mini          small, fast, cost-efficient        xhigh
+    #   gpt-5.3-codex-spark   ultra-fast, 128k context           xhigh
+    #
+    # ── Using more than one ──────────────────────────────────────────
+    # `temperature_emulation.vary_model` reshapes the weights BELOW, so with a
+    # single entry that half of the emulation does nothing. Give it a pool to
+    # make the model axis live — a strong model for the bulk of iterations, a
+    # faster one for cheap breadth:
+    #
+    #   - name: "codex_cli/gpt-5.6-sol"
+    #     weight: 3.0
+    #   - name: "codex_cli/gpt-5.6-terra"
+    #     weight: 2.0
+    #   - name: "codex_cli/gpt-5.6-luna"
+    #     weight: 1.0
 
   # The CLI exposes no sampling knob, so this value is NOT sent to the model;
   # it drives the emulation block below. It keeps its usual meaning:
@@ -53,7 +80,7 @@ llm:
     enabled: auto          # auto | true | false
     vary_model: true
     vary_effort: true
-    # low | medium | high | xhigh | max, plus `ultra` on the largest models.
+    # low | medium | high | xhigh | max, plus `ultra` on gpt-5.6-sol/terra.
     # The exact top rung is per-model (see supported_reasoning_levels in
     # ~/.codex/models_cache.json), but Codex coerces a too-high level down to
     # the nearest supported one. `minimal` is NOT accepted — it is rejected with
@@ -86,7 +113,7 @@ max_solution_length: 60000
 # crosses a rate-limit window survives it. Tune the ceiling per model entry:
 #
 #   models:
-#     - name: "codex_cli/gpt-5.6-terra"
+#     - name: "codex_cli/gpt-5.6-sol"
 #       max_usage_limit_waits: 24   # consecutive pauses before giving up
 #
 # Other per-model options this backend understands:
@@ -102,7 +129,7 @@ max_solution_length: 60000
 #   message is prepended to it under an "# Instructions" header.
 # * No way to disable tools. Codex is a coding agent and always has its shell;
 #   there is no `--tools ""` equivalent. Every call runs under
-#   `--sandbox read-only` with `--ask-for-approval never`, and non-agentic calls
+#   `--sandbox read-only` with `-c approval_policy=never`, and non-agentic calls
 #   run from an empty temp directory so there is nothing there to read. The
 #   model cannot write files or reach the network in either mode.
 # * `--ignore-user-config` is always passed, so whatever is in your

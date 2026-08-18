@@ -15,6 +15,7 @@ from skydiscover.llm.codex_cli import (
     _json_schema_from_response_format,
     _merge_system_prompt,
     _parse_jsonl,
+    available_models,
     normalize_effort,
 )
 from skydiscover.llm.rate_limit import UsageLimitError
@@ -351,3 +352,89 @@ class TestRejectedModes:
     async def test_empty_prompt_is_rejected(self, backend):
         with pytest.raises(ValueError, match="empty prompt"):
             await backend.generate("s", [{"role": "user", "content": "  "}])
+
+
+class TestAvailableModels:
+    """The valid slugs are per-account and volatile — three appeared in one
+    week — so they are read from the CLI's own cache, never hardcoded."""
+
+    def write_cache(self, tmp_path, models):
+        (tmp_path / "models_cache.json").write_text(json.dumps({"models": models}))
+        return str(tmp_path)
+
+    def test_slugs_are_ordered_best_first(self, tmp_path):
+        home = self.write_cache(
+            tmp_path,
+            [
+                {"slug": "gpt-5.4-mini", "priority": 23},
+                {"slug": "gpt-5.6-sol", "priority": 1},
+                {"slug": "gpt-5.6-terra", "priority": 2},
+            ],
+        )
+        assert available_models(home) == ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.4-mini"]
+
+    def test_hidden_models_are_excluded(self, tmp_path):
+        """codex-auto-review is the approval-review model, not one to evolve with."""
+        home = self.write_cache(
+            tmp_path,
+            [
+                {"slug": "gpt-5.6-sol", "priority": 1},
+                {"slug": "codex-auto-review", "priority": 43, "visibility": "hide"},
+            ],
+        )
+        assert available_models(home) == ["gpt-5.6-sol"]
+
+    def test_entry_without_a_slug_is_skipped(self, tmp_path):
+        home = self.write_cache(tmp_path, [{"priority": 1}, {"slug": "gpt-5.5", "priority": 7}])
+        assert available_models(home) == ["gpt-5.5"]
+
+    @pytest.mark.parametrize("payload", ['{"models": "nope"}', "{}", "not json at all"])
+    def test_unusable_cache_returns_empty_not_an_error(self, tmp_path, payload):
+        (tmp_path / "models_cache.json").write_text(payload)
+        assert available_models(str(tmp_path)) == []
+
+    def test_missing_cache_returns_empty(self, tmp_path):
+        assert available_models(str(tmp_path / "nope")) == []
+
+    def test_codex_home_env_var_is_honoured(self, tmp_path, monkeypatch):
+        home = self.write_cache(tmp_path, [{"slug": "gpt-5.6-sol", "priority": 1}])
+        monkeypatch.setenv("CODEX_HOME", home)
+        assert available_models() == ["gpt-5.6-sol"]
+
+
+class TestUnknownModelWarning:
+    """A wrong slug is otherwise only rejected mid-run, as an opaque 400 several
+    retries deep — and the valid names are unguessable (`gpt-5.6` is invalid
+    while `gpt-5.6-sol` is not)."""
+
+    def build(self, monkeypatch, tmp_path, name, slugs=("gpt-5.6-sol",)):
+        (tmp_path / "models_cache.json").write_text(
+            json.dumps({"models": [{"slug": s, "priority": i} for i, s in enumerate(slugs)]})
+        )
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(shutil, "which", lambda _b: "/usr/bin/codex")
+        return CodexCLILLM(LLMModelConfig(name=name))
+
+    def test_unknown_slug_warns_and_lists_the_valid_ones(self, monkeypatch, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="skydiscover.llm"):
+            self.build(monkeypatch, tmp_path, "codex_cli/gpt-5.6")
+        assert "gpt-5.6" in caplog.text and "gpt-5.6-sol" in caplog.text
+
+    def test_known_slug_is_silent(self, monkeypatch, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="skydiscover.llm"):
+            self.build(monkeypatch, tmp_path, "codex_cli/gpt-5.6-sol")
+        assert "not in this account" not in caplog.text
+
+    def test_unreadable_cache_does_not_warn(self, monkeypatch, tmp_path, caplog):
+        """An empty cache means "unknown", not "no models" — it must never block
+        a slug that actually works."""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "nope"))
+        monkeypatch.setattr(shutil, "which", lambda _b: "/usr/bin/codex")
+        with caplog.at_level("WARNING", logger="skydiscover.llm"):
+            CodexCLILLM(LLMModelConfig(name="codex_cli/anything-at-all"))
+        assert "not in this account" not in caplog.text
+
+    def test_no_model_configured_does_not_warn(self, monkeypatch, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="skydiscover.llm"):
+            self.build(monkeypatch, tmp_path, "codex_cli/")
+        assert "not in this account" not in caplog.text
