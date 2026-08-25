@@ -338,6 +338,52 @@ class TestGenerateContract:
             asyncio.run(backend.generate("sys", [{"role": "user", "content": "go"}]))
         get_usage_limit_gate().clear()
 
+    def test_timeout_retry_downgrades_effort(self, backend, monkeypatch):
+        """Each timeout retry steps the effort down a rung instead of
+        re-running the identical call that just thought past the deadline."""
+        efforts = []
+
+        async def fake_invoke(system_message, prompt, **kwargs):
+            efforts.append(kwargs.get("reasoning_effort"))
+            if len(efforts) < 3:
+                raise asyncio.TimeoutError()
+            return {"is_error": False, "result": "done"}
+
+        monkeypatch.setattr(backend, "_invoke_cli", fake_invoke)
+        result = asyncio.run(
+            backend.generate(
+                "sys",
+                [{"role": "user", "content": "go"}],
+                reasoning_effort="max",
+                retries=2,
+                retry_delay=0,
+            )
+        )
+        assert result.text == "done"
+        assert efforts == ["max", "xhigh", "high"]
+
+    def test_timeout_at_lowest_effort_keeps_retrying_unchanged(self, backend, monkeypatch):
+        efforts = []
+
+        async def fake_invoke(system_message, prompt, **kwargs):
+            efforts.append(kwargs.get("reasoning_effort"))
+            if len(efforts) < 2:
+                raise asyncio.TimeoutError()
+            return {"is_error": False, "result": "done"}
+
+        monkeypatch.setattr(backend, "_invoke_cli", fake_invoke)
+        result = asyncio.run(
+            backend.generate(
+                "sys",
+                [{"role": "user", "content": "go"}],
+                reasoning_effort="low",
+                retries=1,
+                retry_delay=0,
+            )
+        )
+        assert result.text == "done"
+        assert efforts == ["low", "low"]
+
 
 @pytest.mark.integration
 @pytest.mark.skipif(not CLI_AVAILABLE, reason="claude CLI not installed")

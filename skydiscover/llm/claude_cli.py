@@ -80,6 +80,16 @@ def normalize_effort(effort: Optional[str]) -> Optional[str]:
     return None
 
 
+def _downgrade_effort(effort: Optional[str]) -> Optional[str]:
+    """One rung down the effort ladder, or None if already lowest/unknown."""
+    if effort not in CLI_EFFORT_LEVELS:
+        return None
+    idx = CLI_EFFORT_LEVELS.index(effort)
+    if idx == 0:
+        return None
+    return CLI_EFFORT_LEVELS[idx - 1]
+
+
 class CostTracker:
     """Process-wide tally of what the CLI reports spending.
 
@@ -251,10 +261,21 @@ class ClaudeCLILLM(LLMInterface):
             except asyncio.TimeoutError:
                 if attempt < retries:
                     attempt += 1
+                    # A timeout at high effort usually means the model thought
+                    # past the deadline; retrying the identical call tends to
+                    # time out again. Step the effort down one rung per timeout
+                    # so the retry budget degrades toward a call that can finish.
+                    effort = normalize_effort(
+                        kwargs.get("reasoning_effort", self.reasoning_effort)
+                    )
+                    downgraded = _downgrade_effort(effort)
+                    if downgraded is not None:
+                        kwargs["reasoning_effort"] = downgraded
                     logger.warning(
-                        "Claude CLI timed out (attempt %s/%s), retrying...",
+                        "Claude CLI timed out (attempt %s/%s), retrying%s...",
                         attempt,
                         retries + 1,
+                        f" at effort={downgraded}" if downgraded is not None else "",
                     )
                     await asyncio.sleep(retry_delay)
                     continue
