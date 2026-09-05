@@ -1,8 +1,11 @@
 """LLM pool -- weighted sampling over one or more LLM backends."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import random
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from skydiscover.config import LLMModelConfig, is_local_provider
@@ -157,13 +160,57 @@ class LLMPool:
             )
         return bool(enabled)
 
-    def _sample_model(self):
+    # ── No-repeat-model-per-prompt enforcement ────────────────────────
+    #: prompt-hash -> set of model indices already used for that exact
+    #: prompt. Near-deterministic backends (Codex/Claude CLIs) produce
+    #: the same answer for the same prompt, so resampling the same model
+    #: for an identical prompt wastes an evaluation on a duplicate
+    #: program. Class-level: shared across pool instances within a run.
+    _prompt_history: "OrderedDict[str, set]" = OrderedDict()
+    _PROMPT_HISTORY_MAX = 4096
+
+    @staticmethod
+    def _prompt_key(system_message: str, messages: List[Dict[str, Any]]) -> str:
+        try:
+            payload = json.dumps([system_message, messages],
+                                 sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            payload = repr((system_message, messages))
+        return hashlib.blake2b(payload.encode(), digest_size=12).hexdigest()
+
+    def _sample_model(self, prompt_key: Optional[str] = None):
         """
-        Simple weighted sampling mechanism. Override this to implement a more complex sampling mechanism.
+        Weighted sampling; with ``prompt_key``, a model already used for
+        that exact prompt is excluded until every pooled model has been
+        tried once (then the cycle resets). Override for custom sampling.
         """
+        used: set = set()
+        if prompt_key is not None and len(self.models) > 1:
+            used = LLMPool._prompt_history.get(prompt_key, set())
+            if len(used) >= len(self.models):
+                used = set()          # all models tried: cycle again
+        weights = [0.0 if i in used else w
+                   for i, w in enumerate(self.effective_weights)]
+        if sum(weights) <= 0:
+            weights = list(self.effective_weights)
         idx = self.random_state.choices(
-            range(len(self.models)), weights=self.effective_weights, k=1
+            range(len(self.models)), weights=weights, k=1
         )[0]
+        if prompt_key is not None and len(self.models) > 1:
+            hist = LLMPool._prompt_history
+            entry = hist.setdefault(prompt_key, set())
+            if len(entry) >= len(self.models):
+                entry.clear()
+            entry.add(idx)
+            hist.move_to_end(prompt_key)
+            while len(hist) > LLMPool._PROMPT_HISTORY_MAX:
+                hist.popitem(last=False)
+            if used:
+                logger.debug(
+                    "No-repeat rule: prompt seen before; excluded %s, chose %s",
+                    sorted(self.models_cfg[i].name for i in used),
+                    self.models_cfg[idx].name,
+                )
         return self.models[idx]
 
     def _emulated_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -188,8 +235,13 @@ class LLMPool:
     async def generate(
         self, system_message: str, messages: List[Dict[str, Any]], **kwargs
     ) -> LLMResponse:
-        """Sample a model and generate a response."""
-        model = self._sample_model()
+        """Sample a model and generate a response.
+
+        The prompt is hashed so that repeated identical prompts (same
+        parent, same context) never draw the same near-deterministic
+        model twice before the pool has cycled.
+        """
+        model = self._sample_model(self._prompt_key(system_message, messages))
         return await model.generate(system_message, messages, **self._emulated_kwargs(kwargs))
 
     async def generate_all(
