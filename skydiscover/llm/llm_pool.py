@@ -3,10 +3,12 @@
 import asyncio
 import logging
 import random
+import time
 from typing import Any, Dict, List, Optional
 
 from skydiscover.config import LLMModelConfig, is_local_provider
 from skydiscover.llm.base import LLMInterface, LLMResponse
+from skydiscover.llm.call_log import GLOBAL_CALL_LOG, describe_backend
 from skydiscover.llm.openai import OpenAILLM
 from skydiscover.llm.temperature import (
     TemperatureEmulationConfig,
@@ -190,13 +192,46 @@ class LLMPool:
     ) -> LLMResponse:
         """Sample a model and generate a response."""
         model = self._sample_model()
-        return await model.generate(system_message, messages, **self._emulated_kwargs(kwargs))
+        call_kwargs = self._emulated_kwargs(kwargs)
+        # The only place where both the sampled model and the sampled effort are
+        # known; neither is recoverable from the config afterwards.
+        details = {
+            **describe_backend(model),
+            "reasoning_effort": call_kwargs.get("reasoning_effort")
+            or getattr(model, "reasoning_effort", None),
+            "emulated": self.temperature_emulator is not None,
+            "temperature": self.temperature,
+        }
+        started = time.monotonic()
+        try:
+            response = await model.generate(system_message, messages, **call_kwargs)
+        except BaseException as exc:
+            GLOBAL_CALL_LOG.record(
+                "generate_failed",
+                duration_s=round(time.monotonic() - started, 3),
+                error_type=type(exc).__name__,
+                error=str(exc)[:300],
+                **details,
+            )
+            raise
+        GLOBAL_CALL_LOG.record(
+            "generate",
+            duration_s=round(time.monotonic() - started, 3),
+            response_chars=len(response.text or ""),
+            **details,
+        )
+        return response
 
     async def generate_all(
         self, system_message: str, messages: List[Dict[str, Any]], **kwargs
     ) -> List[LLMResponse]:
         """Generate using all models concurrently."""
         call_kwargs = self._emulated_kwargs(kwargs)
+        GLOBAL_CALL_LOG.record(
+            "generate_all",
+            models=[getattr(m, "model", None) for m in self.models],
+            reasoning_effort=call_kwargs.get("reasoning_effort"),
+        )
         return await asyncio.gather(
             *(model.generate(system_message, messages, **call_kwargs) for model in self.models)
         )

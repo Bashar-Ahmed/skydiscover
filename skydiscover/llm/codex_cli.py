@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from skydiscover.config import LLMModelConfig
 from skydiscover.llm.base import LLMInterface, LLMResponse
+from skydiscover.llm.call_log import GLOBAL_CALL_LOG
 from skydiscover.llm.rate_limit import (
     UsageLimitError,
     get_usage_limit_gate,
@@ -338,12 +339,28 @@ class CodexCLILLM(LLMInterface):
                         f"Codex CLI still usage-limited after {self.max_usage_limit_waits} "
                         f"waits; giving up. Last message: {exc}"
                     ) from exc
+                GLOBAL_CALL_LOG.record(
+                    "usage_limit_pause",
+                    source="codex_cli",
+                    model=self.model,
+                    wait_number=limit_waits,
+                    reset_at=exc.reset_at,
+                    message=str(exc)[:200],
+                )
                 await gate.pause_for(exc.reset_at, str(exc)[:200])
                 continue
 
             except asyncio.TimeoutError:
                 if attempt < retries:
                     attempt += 1
+                    GLOBAL_CALL_LOG.record(
+                        "retry",
+                        source="codex_cli",
+                        model=self.model,
+                        attempt=attempt,
+                        max_attempts=retries + 1,
+                        reason="timeout",
+                    )
                     logger.warning(
                         "Codex CLI timed out (attempt %s/%s), retrying...", attempt, retries + 1
                     )
@@ -354,6 +371,15 @@ class CodexCLILLM(LLMInterface):
             except Exception as exc:
                 if attempt < retries:
                     attempt += 1
+                    GLOBAL_CALL_LOG.record(
+                        "retry",
+                        source="codex_cli",
+                        model=self.model,
+                        attempt=attempt,
+                        max_attempts=retries + 1,
+                        reason=type(exc).__name__,
+                        error=str(exc)[:200],
+                    )
                     logger.warning(
                         "Codex CLI error (attempt %s/%s): %s, retrying...",
                         attempt,

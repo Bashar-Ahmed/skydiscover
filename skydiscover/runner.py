@@ -9,6 +9,7 @@ import uuid
 from typing import Optional
 
 from skydiscover.config import Config, build_output_dir, load_config
+from skydiscover.llm.call_log import GLOBAL_CALL_LOG
 from skydiscover.search.base_database import Program
 from skydiscover.search.default_discovery_controller import (
     DiscoveryController,
@@ -512,6 +513,9 @@ class Runner:
     def _setup_logging(self) -> None:
         log_dir = self.config.log_dir or os.path.join(self.output_dir, "logs")
         setup_search_logging(log_level=self.config.log_level, log_dir=log_dir, name=self.name)
+        GLOBAL_CALL_LOG.configure(log_dir)
+        if GLOBAL_CALL_LOG.path:
+            logger.info(f"LLM call log: {GLOBAL_CALL_LOG.path}")
 
     def _load_initial_program(self) -> str:
         with open(self.initial_program_path, "r") as f:

@@ -159,6 +159,34 @@ Per-model options: `cli_binary` (or `$SKYDISCOVER_CODEX_BINARY`),
 
 Not supported: image generation.
 
+## Per-call log — what actually ran
+
+`llm/call_log.py`. With temperature emulation the model *and* the effort are
+sampled per call, so neither the config nor the ordinary log says what a given
+iteration ran on. `Runner._setup_logging` points `GLOBAL_CALL_LOG` at
+`<output_dir>/logs/llm_calls.jsonl`, one JSON object per line:
+
+```json
+{"ts":…, "event":"generate", "iteration":2, "phase":"iteration",
+ "backend":"CodexCLILLM", "model":"gpt-5.6-luna", "reasoning_effort":"medium",
+ "emulated":true, "temperature":0.7, "duration_s":7.16, "response_chars":594}
+```
+
+Events: `generate`, `generate_failed`, `generate_all`, `retry` (with `attempt`,
+`reason`, and the Claude backend's `effort_downgraded_to`), and
+`usage_limit_pause` (with `wait_number` and `reset_at`).
+
+`iteration` / `phase` ride a **ContextVar** rather than call signatures — the
+sampling happens deep inside `LLMPool.generate`, and threading an iteration
+number down to it would touch every controller and backend. Set it with
+`set_call_context(...)`; it is set in both `_run_iteration` bodies and in the
+paradigm generator. A new controller that wants iteration numbers in the log
+must call it too, otherwise its rows simply carry no `iteration` key.
+
+The log is disabled until `configure()` is called, and every write failure
+disables it with a warning rather than propagating — observability must not
+fail a run.
+
 ## Usage limits — wait, don't skip
 
 `llm/rate_limit.py`. A quota rejection is treated as **scheduled downtime**: the

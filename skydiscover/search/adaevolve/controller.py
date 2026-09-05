@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from skydiscover.context_builder.adaevolve import AdaEvolveContextBuilder
 from skydiscover.context_builder.default import DefaultContextBuilder
 from skydiscover.evaluation.llm_judge import LLMJudge
+from skydiscover.llm.call_log import set_call_context
 from skydiscover.llm.llm_pool import LLMPool
 from skydiscover.search.adaevolve.paradigm import ParadigmGenerator
 from skydiscover.search.base_database import Program
@@ -305,6 +306,7 @@ class AdaEvolveController(DiscoveryController):
 
     async def _run_iteration(self, iteration: int, checkpoint_callback) -> None:
         """Execute one evolution iteration."""
+        set_call_context(iteration=iteration, phase="iteration")
         iteration_start_time = time.time()
 
         # Check for global paradigm stagnation

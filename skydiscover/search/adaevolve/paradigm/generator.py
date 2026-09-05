@@ -12,6 +12,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from skydiscover.llm.call_log import get_call_context, set_call_context
 from skydiscover.llm.llm_pool import LLMPool
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,7 @@ class ParadigmGenerator:
             List of paradigm dicts with keys:
             idea, description, what_to_optimize, cautions, approach_type
         """
+        set_call_context(**{**get_call_context(), "phase": "paradigm"})
         prompt = self._build_prompt(
             current_program_solution,
             current_best_score,

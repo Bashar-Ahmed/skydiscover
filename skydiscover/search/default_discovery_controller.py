@@ -22,6 +22,7 @@ from skydiscover.evaluation import create_evaluator
 from skydiscover.evaluation.diagnoser import SolutionDiagnoser
 from skydiscover.evaluation.llm_judge import LLMJudge
 from skydiscover.llm.base import LLMResponse
+from skydiscover.llm.call_log import set_call_context
 from skydiscover.llm.llm_pool import LLMPool
 from skydiscover.search.base_database import Program, ProgramDatabase
 from skydiscover.search.utils.discovery_utils import SerializableResult, build_image_content
@@ -445,6 +446,7 @@ class DiscoveryController:
         retry_times: int = 1,
     ) -> SerializableResult:
         """Run a single generate-evaluate iteration."""
+        set_call_context(iteration=iteration, phase="iteration")
         try:
             if not self.database.programs:
                 return await self._run_from_scratch_iteration(iteration)

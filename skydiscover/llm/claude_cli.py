@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from skydiscover.config import LLMModelConfig
 from skydiscover.llm.base import LLMInterface, LLMResponse
+from skydiscover.llm.call_log import GLOBAL_CALL_LOG
 from skydiscover.llm.rate_limit import (
     UsageLimitError,
     get_usage_limit_gate,
@@ -255,6 +256,14 @@ class ClaudeCLILLM(LLMInterface):
                         f"Claude CLI still usage-limited after {self.max_usage_limit_waits} "
                         f"waits; giving up. Last message: {exc}"
                     ) from exc
+                GLOBAL_CALL_LOG.record(
+                    "usage_limit_pause",
+                    source="claude_cli",
+                    model=self.model,
+                    wait_number=limit_waits,
+                    reset_at=exc.reset_at,
+                    message=str(exc)[:200],
+                )
                 await gate.pause_for(exc.reset_at, str(exc)[:200])
                 continue
 
@@ -265,12 +274,19 @@ class ClaudeCLILLM(LLMInterface):
                     # past the deadline; retrying the identical call tends to
                     # time out again. Step the effort down one rung per timeout
                     # so the retry budget degrades toward a call that can finish.
-                    effort = normalize_effort(
-                        kwargs.get("reasoning_effort", self.reasoning_effort)
-                    )
+                    effort = normalize_effort(kwargs.get("reasoning_effort", self.reasoning_effort))
                     downgraded = _downgrade_effort(effort)
                     if downgraded is not None:
                         kwargs["reasoning_effort"] = downgraded
+                    GLOBAL_CALL_LOG.record(
+                        "retry",
+                        source="claude_cli",
+                        model=self.model,
+                        attempt=attempt,
+                        max_attempts=retries + 1,
+                        reason="timeout",
+                        effort_downgraded_to=downgraded,
+                    )
                     logger.warning(
                         "Claude CLI timed out (attempt %s/%s), retrying%s...",
                         attempt,
@@ -284,6 +300,15 @@ class ClaudeCLILLM(LLMInterface):
             except Exception as exc:
                 if attempt < retries:
                     attempt += 1
+                    GLOBAL_CALL_LOG.record(
+                        "retry",
+                        source="claude_cli",
+                        model=self.model,
+                        attempt=attempt,
+                        max_attempts=retries + 1,
+                        reason=type(exc).__name__,
+                        error=str(exc)[:200],
+                    )
                     logger.warning(
                         "Claude CLI error (attempt %s/%s): %s, retrying...",
                         attempt,
