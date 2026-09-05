@@ -122,7 +122,10 @@ class TestAgenticCommandBuilding:
     def test_agentic_enables_read_only_tools(self, backend):
         cmd = backend._build_command(None, agentic=True, max_steps=5)
         tools = cmd[cmd.index("--tools") + 1]
-        assert tools == "Read,Grep,Glob"
+        # Track the declared set rather than a literal, so adding a read-only
+        # tool does not fail here while the write/Bash guard below stays exact.
+        assert tools == ",".join(ClaudeCLILLM.AGENTIC_TOOLS)
+        assert {"Read", "Grep", "Glob"} <= set(tools.split(","))
         # Pre-approved so a non-interactive run never blocks on a prompt.
         assert cmd[cmd.index("--allowed-tools") + 1] == tools
 

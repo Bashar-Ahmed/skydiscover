@@ -1,9 +1,13 @@
 """LLM pool -- weighted sampling over one or more LLM backends."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import random
+import threading
 import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from skydiscover.config import LLMModelConfig, is_local_provider
@@ -159,13 +163,81 @@ class LLMPool:
             )
         return bool(enabled)
 
-    def _sample_model(self):
+    # ── No-repeat-model-per-prompt enforcement ────────────────────────
+    #: history key -> set of model indices already used for that exact prompt.
+    #: Near-deterministic backends (the Codex/Claude CLIs) replay themselves on
+    #: an identical prompt, so redrawing the same model wastes the evaluation on
+    #: a duplicate program. Class-level so the rule survives the several pools a
+    #: run builds, and guarded by a lock because EvoX drives pools from worker
+    #: threads with their own event loops.
+    _prompt_history: "OrderedDict[str, set]" = OrderedDict()
+    _prompt_history_lock = threading.Lock()
+    _PROMPT_HISTORY_MAX = 4096
+
+    @staticmethod
+    def _prompt_key(system_message: str, messages: List[Dict[str, Any]]) -> str:
+        try:
+            payload = json.dumps([system_message, messages], sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            payload = repr((system_message, messages))
+        return hashlib.blake2b(payload.encode(), digest_size=12).hexdigest()
+
+    def _history_key(self, prompt_key: str) -> str:
+        """Namespace the prompt by this pool's roster.
+
+        The history stores model *indices*, so it is only meaningful within one
+        roster. A run builds several pools — llms, evaluator_llms, guide_llms —
+        that may hold different models, and without this they share one entry:
+        the shorter pool's cycle-reset wipes the longer pool's history, silently
+        removing the guarantee from the pool that needed it.
         """
-        Simple weighted sampling mechanism. Override this to implement a more complex sampling mechanism.
+        roster = getattr(self, "_roster_key", None)
+        if roster is None:
+            roster = hashlib.blake2b(
+                repr([c.name for c in self.models_cfg]).encode(), digest_size=6
+            ).hexdigest()
+            self._roster_key = roster
+        return f"{prompt_key}:{roster}"
+
+    def _sample_model(self, prompt_key: Optional[str] = None):
         """
-        idx = self.random_state.choices(
-            range(len(self.models)), weights=self.effective_weights, k=1
-        )[0]
+        Weighted sampling. With ``prompt_key``, a model already drawn for that
+        exact prompt is excluded until every pooled model has been tried once,
+        then the cycle restarts. Override for custom sampling.
+        """
+        track = prompt_key is not None and len(self.models) > 1
+        used: set = set()
+        key = self._history_key(prompt_key) if track else None
+
+        if track:
+            with LLMPool._prompt_history_lock:
+                # Copy: the stored set is mutated below, and an alias would make
+                # the debug line name the model we just chose as "excluded".
+                used = set(LLMPool._prompt_history.get(key, ()))
+            if len(used) >= len(self.models):
+                used = set()  # every model tried: cycle again
+
+        weights = [0.0 if i in used else w for i, w in enumerate(self.effective_weights)]
+        if sum(weights) <= 0:
+            weights = list(self.effective_weights)
+        idx = self.random_state.choices(range(len(self.models)), weights=weights, k=1)[0]
+
+        if track:
+            with LLMPool._prompt_history_lock:
+                hist = LLMPool._prompt_history
+                entry = hist.setdefault(key, set())
+                if len(entry) >= len(self.models):
+                    entry.clear()
+                entry.add(idx)
+                hist.move_to_end(key)
+                while len(hist) > LLMPool._PROMPT_HISTORY_MAX:
+                    hist.popitem(last=False)
+            if used:
+                logger.debug(
+                    "No-repeat rule: prompt seen before; excluded %s, chose %s",
+                    sorted(self.models_cfg[i].name for i in used),
+                    self.models_cfg[idx].name,
+                )
         return self.models[idx]
 
     def _emulated_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -190,8 +262,13 @@ class LLMPool:
     async def generate(
         self, system_message: str, messages: List[Dict[str, Any]], **kwargs
     ) -> LLMResponse:
-        """Sample a model and generate a response."""
-        model = self._sample_model()
+        """Sample a model and generate a response.
+
+        The prompt is hashed so repeated identical prompts (same parent, same
+        context) never redraw the same near-deterministic model before the pool
+        has cycled.
+        """
+        model = self._sample_model(self._prompt_key(system_message, messages))
         call_kwargs = self._emulated_kwargs(kwargs)
         # The only place where both the sampled model and the sampled effort are
         # known; neither is recoverable from the config afterwards.

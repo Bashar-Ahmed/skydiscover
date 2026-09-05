@@ -154,7 +154,9 @@ class ClaudeCLILLM(LLMInterface):
     #: Read-only tools exposed in agentic mode. Deliberately excludes Edit,
     #: Write, and Bash: the agent's job is to explore the codebase before
     #: proposing a solution, not to modify the machine it runs on.
-    AGENTIC_TOOLS = ("Read", "Grep", "Glob")
+    #: WebSearch/WebFetch are read-only research tools: the agent may
+    #: consult literature independently before proposing a solution.
+    AGENTIC_TOOLS = ("Read", "Grep", "Glob", "WebSearch", "WebFetch")
 
     def __init__(self, model_cfg: Optional[LLMModelConfig] = None):
         model_cfg = model_cfg or LLMModelConfig()

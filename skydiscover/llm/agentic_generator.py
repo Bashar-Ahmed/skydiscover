@@ -78,7 +78,7 @@ class AgenticGenerator:
         # Backends that are agents in their own right (the Claude Code CLI) run
         # their own tool loop; this ReAct loop needs function-calling, which
         # they cannot participate in.
-        native_model = self._sample_model()
+        native_model = self._sample_model(system_message, user_message)
         if getattr(native_model, "supports_native_agentic", False):
             return await self._generate_native(native_model, system_message, user_message)
 
@@ -176,14 +176,24 @@ class AgenticGenerator:
         logger.warning("Agent loop ended without producing code")
         return None
 
-    def _sample_model(self):
+    def _sample_model(self, system_message=None, user_message=None):
         """Sample one backend from the pool.
 
         Uses the pool's own sampler so temperature-emulated weights apply here
-        too; falls back to raw weights for pool stand-ins that lack it.
+        too; falls back to raw weights for pool stand-ins that lack it. When
+        the prompt is provided, it is hashed so the pool's no-repeat rule
+        (same model never redrawn for an identical prompt) applies to the
+        agentic path exactly as it does to direct generation.
         """
         sampler = getattr(self.llm_pool, "_sample_model", None)
         if callable(sampler):
+            keyfn = getattr(self.llm_pool, "_prompt_key", None)
+            if callable(keyfn) and system_message is not None:
+                try:
+                    key = keyfn(system_message, [{"role": "user", "content": user_message or ""}])
+                    return sampler(key)
+                except TypeError:
+                    pass
             return sampler()
         weights = getattr(self.llm_pool, "effective_weights", None) or self.llm_pool.weights
         index = self.llm_pool.random_state.choices(
@@ -200,6 +210,13 @@ class AgenticGenerator:
             cfg.max_steps,
         )
         try:
+            # Thread the pool's emulated per-call parameters (reasoning
+            # effort ladder) through to the native loop; without this the
+            # backend silently runs at its CLI default effort.
+            call_kwargs = {}
+            emul = getattr(self.llm_pool, "_emulated_kwargs", None)
+            if callable(emul):
+                call_kwargs = dict(emul({}))
             response = await model.generate(
                 system_message,
                 [{"role": "user", "content": user_message}],
@@ -207,6 +224,7 @@ class AgenticGenerator:
                 codebase_root=cfg.codebase_root,
                 max_steps=cfg.max_steps,
                 timeout=cfg.overall_timeout,
+                **call_kwargs,
             )
         except Exception as exc:
             logger.error("Native agentic generation failed: %s", exc)
