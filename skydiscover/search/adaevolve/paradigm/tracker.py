@@ -7,7 +7,7 @@ container with simple methods - no LLM calls or I/O.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,13 @@ class ParadigmTracker:
     paradigm_usage_counts: Dict[int, int] = field(default_factory=dict)
     current_paradigm_index: int = 0
 
+    # Per-paradigm attribution: batch counter and cumulative global-best
+    # gain credited to each paradigm's own children in the current batch.
+    # The batch id ties a use ticket to the batch it came from, so a child
+    # evaluated after the batch was replaced cannot credit the new batch.
+    batch_id: int = 0
+    paradigm_attributed_gain: Dict[int, float] = field(default_factory=dict)
+
     # Previously tried paradigms with outcomes - bounded list
     tried_paradigms: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -53,7 +60,12 @@ class ParadigmTracker:
     # Improvement Recording
     # =========================================================================
 
-    def record_improvement(self, improved: bool, current_best_score: float = 0.0) -> None:
+    def record_improvement(
+        self,
+        improved: bool,
+        current_best_score: float = 0.0,
+        paradigm_use: Optional[Sequence[int]] = None,
+    ) -> None:
         """
         Record binary improvement (1.0 if global best changed, else 0.0).
 
@@ -63,6 +75,13 @@ class ParadigmTracker:
         Args:
             improved: Whether the global best changed
             current_best_score: Current best score for outcome tracking
+            paradigm_use: The (batch_id, paradigm_index) ticket returned by
+                use_paradigm() for the program being recorded, if that
+                program was generated under paradigm guidance. When the
+                ticket belongs to the current batch, any global-best gain
+                from this program is credited to that specific paradigm.
+                A ticket from an already-replaced batch is ignored (the
+                old batch was archived with the gains it had).
         """
         value = 1.0 if improved else 0.0
         self.improvement_history.append(value)
@@ -71,8 +90,21 @@ class ParadigmTracker:
         while len(self.improvement_history) > self.window_size:
             self.improvement_history.pop(0)
 
-        # Track best score during paradigm usage for outcome evaluation
+        # Track best score during paradigm usage for outcome evaluation,
+        # crediting the specific guiding paradigm when one is identified.
         if self.active_paradigms and current_best_score > self.best_score_during_paradigm:
+            gain = current_best_score - self.best_score_during_paradigm
+            if (
+                improved
+                and paradigm_use is not None
+                and len(paradigm_use) == 2
+                and paradigm_use[0] == self.batch_id
+                and 0 <= paradigm_use[1] < len(self.active_paradigms)
+            ):
+                idx = int(paradigm_use[1])
+                self.paradigm_attributed_gain[idx] = (
+                    self.paradigm_attributed_gain.get(idx, 0.0) + gain
+                )
             self.best_score_during_paradigm = current_best_score
 
     def get_improvement_rate(self) -> float:
@@ -143,28 +175,37 @@ class ParadigmTracker:
 
         return self.active_paradigms[self.current_paradigm_index]
 
-    def use_paradigm(self) -> None:
+    def use_paradigm(self) -> Optional[Tuple[int, int]]:
         """
         Record one use of the current paradigm.
 
         Called when a child is generated using the paradigm guidance.
         Increments usage counter for round-robin tracking.
+
+        Returns:
+            A (batch_id, paradigm_index) ticket identifying the paradigm
+            that guided this child, to be passed back to
+            record_improvement() when the child's evaluation is recorded.
+            None if no paradigm was available.
         """
         if not self.active_paradigms:
-            return
+            return None
 
-        current_uses = self.paradigm_usage_counts.get(self.current_paradigm_index, 0)
-        self.paradigm_usage_counts[self.current_paradigm_index] = current_uses + 1
+        used_index = self.current_paradigm_index
+        current_uses = self.paradigm_usage_counts.get(used_index, 0)
+        self.paradigm_usage_counts[used_index] = current_uses + 1
 
         # Log paradigm usage with idea
-        paradigm = self.active_paradigms[self.current_paradigm_index]
+        paradigm = self.active_paradigms[used_index]
         logger.info(
-            f"Using paradigm {self.current_paradigm_index + 1}/{len(self.active_paradigms)} "
+            f"Using paradigm {used_index + 1}/{len(self.active_paradigms)} "
             f"({current_uses + 1}/{self.max_paradigm_uses}): {paradigm.get('idea', 'N/A')}"
         )
 
         # Rotate for next use
         self._try_rotate_paradigm()
+
+        return (self.batch_id, used_index)
 
     # =========================================================================
     # Paradigm Management
@@ -187,6 +228,8 @@ class ParadigmTracker:
         self.active_paradigms = paradigms
         self.paradigm_usage_counts = {}
         self.current_paradigm_index = 0
+        self.batch_id += 1
+        self.paradigm_attributed_gain = {}
         self.best_score_at_paradigm_gen = current_best_score
         self.best_score_during_paradigm = current_best_score
 
@@ -203,6 +246,8 @@ class ParadigmTracker:
         self.active_paradigms = []
         self.paradigm_usage_counts = {}
         self.current_paradigm_index = 0
+        self.batch_id += 1
+        self.paradigm_attributed_gain = {}
         logger.debug("Cleared active paradigms")
 
     # =========================================================================
@@ -236,12 +281,15 @@ class ParadigmTracker:
         Archive current paradigms to tried list with outcome info.
 
         Stores each paradigm with its usage count and score improvement
-        for potential feedback to the generator.
+        for potential feedback to the generator. Outcomes are attributed
+        per paradigm: a paradigm is a SUCCESS only if its own guided
+        children produced global-best gains, not because a batch-mate's
+        child improved the score.
         """
         if not self.active_paradigms:
             return
 
-        # Calculate improvement achieved during this paradigm batch
+        # Improvement achieved during this paradigm batch (all sources)
         score_improvement = self.best_score_during_paradigm - self.best_score_at_paradigm_gen
 
         for idx, paradigm in enumerate(self.active_paradigms):
@@ -249,13 +297,15 @@ class ParadigmTracker:
             if uses == 0:
                 continue  # Don't archive unused paradigms
 
+            attributed = self.paradigm_attributed_gain.get(idx, 0.0)
             archived = {
                 **paradigm,
                 "uses": uses,
                 "starting_score": self.best_score_at_paradigm_gen,
                 "ending_score": self.best_score_during_paradigm,
                 "score_improvement": score_improvement,
-                "outcome": "SUCCESS" if score_improvement > 0.001 else "FAILED",
+                "attributed_improvement": attributed,
+                "outcome": "SUCCESS" if attributed > 0.001 else "FAILED",
             }
             self.tried_paradigms.append(archived)
 
@@ -263,16 +313,21 @@ class ParadigmTracker:
         while len(self.tried_paradigms) > self.max_tried_paradigms:
             self.tried_paradigms.pop(0)
 
-        # Log archived paradigms with outcomes
+        # Log archived paradigms with per-paradigm outcomes
         if self.active_paradigms:
             logger.info(
-                f"Archived {len(self.active_paradigms)} paradigms (improvement: {score_improvement:+.6f}):"
+                f"Archived {len(self.active_paradigms)} paradigms "
+                f"(batch improvement: {score_improvement:+.6f}):"
             )
             for idx, paradigm in enumerate(self.active_paradigms):
                 uses = self.paradigm_usage_counts.get(idx, 0)
                 if uses > 0:
-                    outcome = "SUCCESS" if score_improvement > 0.001 else "FAILED"
-                    logger.info(f"  [{outcome}] {paradigm.get('idea', 'N/A')} (uses: {uses})")
+                    attributed = self.paradigm_attributed_gain.get(idx, 0.0)
+                    outcome = "SUCCESS" if attributed > 0.001 else "FAILED"
+                    logger.info(
+                        f"  [{outcome}] {paradigm.get('idea', 'N/A')} "
+                        f"(uses: {uses}, attributed: {attributed:+.6f})"
+                    )
 
     # =========================================================================
     # Feedback for Generator
@@ -296,7 +351,10 @@ class ParadigmTracker:
             outcome = p.get("outcome", "UNCLEAR")
             approach = p.get("approach_type", "unknown")
             idea = p.get("idea", "unknown")
-            improvement = p.get("score_improvement", 0.0)
+            # Prefer the per-paradigm attributed gain; fall back to the
+            # batch-level number for entries archived before attribution
+            # existed (e.g. restored from an old checkpoint).
+            improvement = p.get("attributed_improvement", p.get("score_improvement", 0.0))
 
             # Format: "OUTCOME: approach_type - idea (improvement: +/-X.XXXX)"
             result.append(f"{outcome}: {approach} - {idea} (improvement: {improvement:+.4f})")
@@ -319,6 +377,8 @@ class ParadigmTracker:
             "active_paradigms": list(self.active_paradigms),
             "paradigm_usage_counts": dict(self.paradigm_usage_counts),
             "current_paradigm_index": self.current_paradigm_index,
+            "batch_id": self.batch_id,
+            "paradigm_attributed_gain": dict(self.paradigm_attributed_gain),
             "tried_paradigms": list(self.tried_paradigms),
             "best_score_at_paradigm_gen": self.best_score_at_paradigm_gen,
             "best_score_during_paradigm": self.best_score_during_paradigm,
@@ -340,6 +400,10 @@ class ParadigmTracker:
             int(k): v for k, v in data.get("paradigm_usage_counts", {}).items()
         }
         tracker.current_paradigm_index = data.get("current_paradigm_index", 0)
+        tracker.batch_id = data.get("batch_id", 0)
+        tracker.paradigm_attributed_gain = {
+            int(k): v for k, v in data.get("paradigm_attributed_gain", {}).items()
+        }
         tracker.tried_paradigms = list(data.get("tried_paradigms", []))
         tracker.best_score_at_paradigm_gen = data.get("best_score_at_paradigm_gen", 0.0)
         tracker.best_score_during_paradigm = data.get("best_score_during_paradigm", 0.0)
