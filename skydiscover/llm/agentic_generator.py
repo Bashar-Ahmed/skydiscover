@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from skydiscover.llm.call_log import GLOBAL_CALL_LOG, describe_backend
 from skydiscover.llm.openai import is_openai_reasoning_model
 from skydiscover.llm.rate_limit import (
     extract_error_details,
@@ -209,14 +210,26 @@ class AgenticGenerator:
             type(model).__name__,
             cfg.max_steps,
         )
+        # Thread the pool's emulated per-call parameters (reasoning
+        # effort ladder) through to the native loop; without this the
+        # backend silently runs at its CLI default effort.
+        call_kwargs = {}
+        emul = getattr(self.llm_pool, "_emulated_kwargs", None)
+        if callable(emul):
+            call_kwargs = dict(emul({}))
+        # This path bypasses LLMPool.generate, so log the call here the same
+        # way the pool does -- the call log is the only record of which
+        # model and effort a generation actually used.
+        details = {
+            **describe_backend(model),
+            "reasoning_effort": call_kwargs.get("reasoning_effort")
+            or getattr(model, "reasoning_effort", None),
+            "emulated": getattr(self.llm_pool, "temperature_emulator", None) is not None,
+            "temperature": getattr(self.llm_pool, "temperature", None),
+            "agentic": True,
+        }
+        started = time.monotonic()
         try:
-            # Thread the pool's emulated per-call parameters (reasoning
-            # effort ladder) through to the native loop; without this the
-            # backend silently runs at its CLI default effort.
-            call_kwargs = {}
-            emul = getattr(self.llm_pool, "_emulated_kwargs", None)
-            if callable(emul):
-                call_kwargs = dict(emul({}))
             response = await model.generate(
                 system_message,
                 [{"role": "user", "content": user_message}],
@@ -227,9 +240,22 @@ class AgenticGenerator:
                 **call_kwargs,
             )
         except Exception as exc:
+            GLOBAL_CALL_LOG.record(
+                "generate_failed",
+                duration_s=round(time.monotonic() - started, 3),
+                error_type=type(exc).__name__,
+                error=str(exc)[:300],
+                **details,
+            )
             logger.error("Native agentic generation failed: %s", exc)
             return None
         text = (response.text or "").strip()
+        GLOBAL_CALL_LOG.record(
+            "generate",
+            duration_s=round(time.monotonic() - started, 3),
+            response_chars=len(text),
+            **details,
+        )
         return text or None
 
     async def _call_llm_with_limits(
