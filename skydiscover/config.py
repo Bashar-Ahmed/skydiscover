@@ -698,6 +698,13 @@ class Config:
     search: SearchConfig = field(default_factory=SearchConfig)
     evaluator: EvaluatorConfig = field(default_factory=EvaluatorConfig)
     agentic: AgenticConfig = field(default_factory=AgenticConfig)
+    #: Agentic settings for the GUIDE pool's paradigm-breakthrough calls
+    #: (AdaEvolve). Independent of `agentic`, which governs solution
+    #: generation: a run can keep its mutation calls tool-free while its
+    #: paradigm calls read a research library and search the web. Only
+    #: backends with a native agent loop (the Claude/Codex CLIs) honour it;
+    #: a pool with any other backend falls back to plain generation.
+    paradigm_agentic: AgenticConfig = field(default_factory=AgenticConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
 
     # Live monitor dashboard
@@ -769,6 +776,7 @@ class Config:
                 "search",
                 "evaluator",
                 "agentic",
+                "paradigm_agentic",
                 "benchmark",
                 "monitor",
             ] and hasattr(config, key):
@@ -817,6 +825,12 @@ class Config:
                 if tuple_field in agentic_dict and isinstance(agentic_dict[tuple_field], list):
                     agentic_dict[tuple_field] = tuple(agentic_dict[tuple_field])
             config.agentic = AgenticConfig(**agentic_dict)
+        if "paradigm_agentic" in config_dict:
+            pa_dict = dict(config_dict["paradigm_agentic"])
+            for tuple_field in ("allowed_extensions", "excluded_dirs"):
+                if tuple_field in pa_dict and isinstance(pa_dict[tuple_field], list):
+                    pa_dict[tuple_field] = tuple(pa_dict[tuple_field])
+            config.paradigm_agentic = AgenticConfig(**pa_dict)
         if "benchmark" in config_dict:
             benchmark_dict = config_dict["benchmark"]
             # Separate known dataclass fields from benchmark-specific parameters
@@ -875,6 +889,16 @@ class Config:
                 "cascade_thresholds": self.evaluator.cascade_thresholds,
                 "inject_evaluator_context": self.evaluator.inject_evaluator_context,
                 "llm_as_judge": self.evaluator.llm_as_judge,
+            },
+            # Paradigm-call agentic settings (guide pool)
+            "paradigm_agentic": {
+                "enabled": self.paradigm_agentic.enabled,
+                "codebase_root": self.paradigm_agentic.codebase_root,
+                "max_steps": self.paradigm_agentic.max_steps,
+                "per_step_timeout": self.paradigm_agentic.per_step_timeout,
+                "overall_timeout": self.paradigm_agentic.overall_timeout,
+                "allowed_extensions": list(self.paradigm_agentic.allowed_extensions),
+                "excluded_dirs": list(self.paradigm_agentic.excluded_dirs),
             },
             # Agentic generation
             "agentic": {

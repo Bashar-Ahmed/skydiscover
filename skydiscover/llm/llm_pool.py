@@ -278,6 +278,7 @@ class LLMPool:
             or getattr(model, "reasoning_effort", None),
             "emulated": self.temperature_emulator is not None,
             "temperature": self.temperature,
+            "agentic": bool(call_kwargs.get("agentic")),
         }
         started = time.monotonic()
         try:

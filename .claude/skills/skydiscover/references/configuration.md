@@ -29,7 +29,7 @@ be picked up by an ordinary `skydiscover-run`; export the vars yourself.
 |---|---|
 | Top-level keys | applied only `if hasattr(config, key)` → **silently dropped** |
 | `search.database`, `benchmark` | known fields split out; extras `setattr`'d / funnelled into `params` → **works**, so a strategy can take knobs before it has a typed config class |
-| `llm`, `prompt`, `evaluator`, `agentic`, `monitor`, `search` | splatted with `**dict` → **any typo raises `TypeError`** |
+| `llm`, `prompt`, `evaluator`, `agentic`, `paradigm_agentic`, `monitor`, `search` | splatted with `**dict` → **any typo raises `TypeError`** |
 
 So a misspelled top-level key fails silently, while a misspelled `llm` key
 crashes at startup. `random_seed: 42` appears at the top level of four shipped
@@ -51,6 +51,7 @@ configs and is silently dropped — `Config` has no such field.
 | `max_solution_length` | 60000 | over-length becomes a *parse error*, not a truncation |
 | `max_parallel_iterations` | 1 | **only the base controller reads it** — inert for adaevolve / evox / gepa_native / claude_code. Documented nowhere else. |
 | `human_feedback_enabled` | **`true`** | `human_feedback_mode: "replace"` overwrites `prompt["system"]` wholesale |
+| `paradigm_agentic` | `AgenticConfig()` (disabled) | same shape as `agentic`; switches AdaEvolve's guide-pool paradigm calls into the backend's native agent loop (file tools at `codebase_root`, web search on the CLIs). Independent of `agentic`. See `search-strategies.md` |
 | `system_prompt_override` | `None` | runtime-only, set by `apply_overrides` |
 
 ## `llm`

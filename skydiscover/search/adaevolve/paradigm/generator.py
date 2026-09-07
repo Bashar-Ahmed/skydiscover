@@ -56,6 +56,7 @@ class ParadigmGenerator:
         objective_names: Optional[List[str]] = None,
         higher_is_better: Optional[Dict[str, bool]] = None,
         fitness_key: Optional[str] = None,
+        agentic: Optional[Any] = None,
     ):
         """
         Initialize the paradigm generator.
@@ -67,8 +68,18 @@ class ParadigmGenerator:
             num_paradigms: Number of paradigms to generate per call
             eval_timeout: Evaluation timeout in seconds
             language: Language of the solution being evolved ("python" for code, "image" for images, etc.)
+            agentic: Optional AgenticConfig. When enabled, paradigm calls run
+                the backend's NATIVE agent loop (read-only file tools rooted at
+                codebase_root, web search where the CLI offers it) so ideas
+                can be grounded in a research library and the literature.
+                Honoured only when every pooled backend has a native agent
+                loop; otherwise plain generation with a one-time warning.
         """
         self.llm_pool = llm_pool
+        self.agentic = (
+            agentic if (agentic is not None and getattr(agentic, "enabled", False)) else None
+        )
+        self._agentic_warned = False
         self.system_message = system_message
         self.evaluator_code = evaluator_code
         self.num_paradigms = num_paradigms
@@ -79,6 +90,29 @@ class ParadigmGenerator:
         self.objective_names = list(objective_names or [])
         self.higher_is_better = dict(higher_is_better or {})
         self.fitness_key = fitness_key
+
+    def _agentic_kwargs(self) -> Dict[str, Any]:
+        """Per-call kwargs that switch the guide pool into its native agent loop."""
+        if self.agentic is None:
+            return {}
+        models = getattr(self.llm_pool, "models", None) or []
+        if not models or not all(getattr(m, "supports_native_agentic", False) for m in models):
+            if not self._agentic_warned:
+                logger.warning(
+                    "paradigm_agentic is enabled but the guide pool holds a backend "
+                    "without a native agent loop; paradigm calls run without tools."
+                )
+                self._agentic_warned = True
+            return {}
+        kwargs: Dict[str, Any] = {
+            "agentic": True,
+            "codebase_root": getattr(self.agentic, "codebase_root", None),
+            "max_steps": int(getattr(self.agentic, "max_steps", 5) or 5),
+        }
+        overall = getattr(self.agentic, "overall_timeout", None)
+        if overall:
+            kwargs["timeout"] = overall
+        return kwargs
 
     def _is_multiobjective(self) -> bool:
         """Return True when explicit Pareto objectives are configured."""
@@ -142,6 +176,7 @@ class ParadigmGenerator:
                 result = await self.llm_pool.generate(
                     system_message=self._get_system_message(),
                     messages=[{"role": "user", "content": prompt}],
+                    **self._agentic_kwargs(),
                     response_format={
                         "type": "json_schema",
                         "json_schema": {

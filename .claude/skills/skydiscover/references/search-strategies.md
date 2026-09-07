@@ -45,7 +45,15 @@ improvement rate over a sliding window drops below threshold, the **guide LLM
 pool** (deliberately separate from the mutation pool) is asked via a strict
 `json_schema` for N code-free breakthrough ideas. These are injected as a
 mandatory `## BREAKTHROUGH IDEA - IMPLEMENT THIS` block and rotate round-robin
-until exhausted.
+until exhausted. A top-level `paradigm_agentic:` block (same shape as
+`agentic:`) makes those guide-pool calls run the backend's **native agent
+loop** — read-only file tools rooted at its `codebase_root` and, on the CLI
+backends, web search — independently of whether solution generation is
+agentic. Honoured only when every pooled guide backend has
+`supports_native_agentic`; otherwise the generator warns once and calls plainly.
+The Codex CLI needs `cli_extra_args: ["--config", "tools.web_search=true"]` on
+the model for web search; the Claude CLI's agentic tool list already includes
+WebSearch/WebFetch. `llm_calls.jsonl` records `agentic: true` on such calls.
 
 **Storage** — a flat quality-diversity `UnifiedArchive` per island with
 deterministic-crowding eviction. **Explicitly not MAP-Elites** (that's

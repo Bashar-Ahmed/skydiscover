@@ -96,7 +96,17 @@ class AdaEvolveController(DiscoveryController):
                 objective_names=getattr(db_config, "pareto_objectives", []),
                 higher_is_better=getattr(db_config, "higher_is_better", {}),
                 fitness_key=getattr(db_config, "fitness_key", None),
+                agentic=getattr(self.config, "paradigm_agentic", None),
             )
+            if (
+                getattr(self.config, "paradigm_agentic", None) is not None
+                and self.config.paradigm_agentic.enabled
+            ):
+                logger.info(
+                    "Paradigm LLM: agentic (native tool loop, root=%s, max_steps=%s)",
+                    self.config.paradigm_agentic.codebase_root,
+                    self.config.paradigm_agentic.max_steps,
+                )
         else:
             self.paradigm_generator = None
 
