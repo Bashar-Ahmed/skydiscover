@@ -554,9 +554,11 @@ class AdaEvolveController(DiscoveryController):
             # Build prompt (AdaEvolveContextBuilder handles paradigm/sibling/error formatting)
             prompt = self.context_builder.build_prompt(parent_dict, context)
 
-            # Mark paradigm as used after prompt is built
+            # Mark paradigm as used after prompt is built; keep the use
+            # ticket so the child's outcome credits the right paradigm
+            paradigm_use = None
             if paradigm:
-                self.database.use_paradigm()
+                paradigm_use = self.database.use_paradigm()
 
             # Build tracking info for child program
             parent_info = (parent_label, parent.id)
@@ -584,6 +586,7 @@ class AdaEvolveController(DiscoveryController):
                 context_info=context_info,
                 context_program_ids=context_program_ids,
                 other_context_programs=context_programs_dict,
+                paradigm_use=paradigm_use,
             )
 
         except Exception as e:
@@ -603,6 +606,7 @@ class AdaEvolveController(DiscoveryController):
         context_info: Optional[List[tuple]] = None,
         context_program_ids: Optional[List[str]] = None,
         other_context_programs: Optional[Dict] = None,
+        paradigm_use: Optional[tuple] = None,
     ) -> SerializableResult:
         """Execute LLM generation and evaluation."""
         start_time = time.time()
@@ -722,6 +726,10 @@ class AdaEvolveController(DiscoveryController):
         child_metadata = {"changes": changes, "parent_metrics": parent.metrics}
         if image_path:
             child_metadata["image_path"] = image_path
+        if paradigm_use is not None:
+            # (batch_id, paradigm_index) ticket for outcome attribution;
+            # stored as a list so it survives JSON round-trips
+            child_metadata["paradigm_use"] = list(paradigm_use)
         artifacts = await self._attach_diagnostics(
             child_solution=child_solution,
             child_metrics=metrics,

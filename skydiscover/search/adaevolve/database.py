@@ -494,7 +494,13 @@ class AdaEvolveDatabase(ProgramDatabase):
             # paradigm_window_size makes the run look stagnant from the start
             # and spends a paradigm breakthrough before a single edit.
             if self.paradigm_tracker is not None and not is_migration and not is_seed:
-                self.paradigm_tracker.record_improvement(global_improved, self._global_best_score)
+                # The (batch_id, index) use ticket travels with the program's
+                # metadata so the gain is credited to the paradigm that
+                # actually guided this child (None for unguided children).
+                paradigm_use = (program.metadata or {}).get("paradigm_use")
+                self.paradigm_tracker.record_improvement(
+                    global_improved, self._global_best_score, paradigm_use=paradigm_use
+                )
 
             # Save if configured
             if self.config.db_path:
@@ -2190,10 +2196,16 @@ class AdaEvolveDatabase(ProgramDatabase):
             return None
         return self.paradigm_tracker.get_current_paradigm()
 
-    def use_paradigm(self) -> None:
-        """Record one use of the current paradigm."""
+    def use_paradigm(self) -> Optional[Tuple[int, int]]:
+        """Record one use of the current paradigm.
+
+        Returns the tracker's (batch_id, paradigm_index) use ticket so the
+        caller can attach it to the generated child for outcome
+        attribution; None if no paradigm was available.
+        """
         if self.paradigm_tracker is not None:
-            self.paradigm_tracker.use_paradigm()
+            return self.paradigm_tracker.use_paradigm()
+        return None
 
     def set_paradigms(self, paradigms: List[Dict[str, Any]]) -> None:
         """Set new paradigms from generator."""
