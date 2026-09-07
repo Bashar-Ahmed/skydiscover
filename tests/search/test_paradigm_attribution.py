@@ -152,3 +152,27 @@ def test_old_checkpoint_without_attribution_fields_loads():
     assert restored.get_previously_tried_ideas() == [
         "FAILED: t - x (improvement: +0.0000)"
     ]
+
+
+def test_exhaustion_notice_logged_once_per_batch(caplog):
+    import logging
+
+    t = _make_tracker()
+    with caplog.at_level(logging.INFO):
+        t.set_paradigms(_paradigms(2), current_best_score=0.0)
+        while t.get_current_paradigm() is not None:
+            t.use_paradigm()
+        for _ in range(10):  # repeated polling must not repeat the notice
+            assert not t.has_active_paradigm()
+        notices = [r for r in caplog.records if "paradigms exhausted" in r.message]
+        assert len(notices) == 1
+
+        # A fresh batch re-arms the notice
+        caplog.clear()
+        t.set_paradigms(_paradigms(2), current_best_score=0.0)
+        while t.get_current_paradigm() is not None:
+            t.use_paradigm()
+        for _ in range(10):
+            assert not t.has_active_paradigm()
+        notices = [r for r in caplog.records if "paradigms exhausted" in r.message]
+        assert len(notices) == 1

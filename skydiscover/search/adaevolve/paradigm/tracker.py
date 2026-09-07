@@ -49,6 +49,11 @@ class ParadigmTracker:
     batch_id: int = 0
     paradigm_attributed_gain: Dict[int, float] = field(default_factory=dict)
 
+    # Log hygiene: the exhaustion notice is emitted once per batch, not on
+    # every has_active_paradigm() poll (not serialized; a checkpoint resume
+    # may repeat the notice once, which is harmless).
+    exhaustion_logged: bool = False
+
     # Previously tried paradigms with outcomes - bounded list
     tried_paradigms: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -230,6 +235,7 @@ class ParadigmTracker:
         self.current_paradigm_index = 0
         self.batch_id += 1
         self.paradigm_attributed_gain = {}
+        self.exhaustion_logged = False
         self.best_score_at_paradigm_gen = current_best_score
         self.best_score_during_paradigm = current_best_score
 
@@ -248,6 +254,7 @@ class ParadigmTracker:
         self.current_paradigm_index = 0
         self.batch_id += 1
         self.paradigm_attributed_gain = {}
+        self.exhaustion_logged = False
         logger.debug("Cleared active paradigms")
 
     # =========================================================================
@@ -272,8 +279,10 @@ class ParadigmTracker:
                 logger.debug(f"Rotated to paradigm {next_idx}")
                 return True
 
-        # All paradigms exhausted
-        logger.info("All paradigms exhausted, will archive on next check")
+        # All paradigms exhausted — say so once per batch, not on every poll
+        if not self.exhaustion_logged:
+            logger.info("All paradigms exhausted, will archive on next check")
+            self.exhaustion_logged = True
         return False
 
     def _archive_current_paradigms(self) -> None:
