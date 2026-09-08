@@ -45,7 +45,12 @@ improvement rate over a sliding window drops below threshold, the **guide LLM
 pool** (deliberately separate from the mutation pool) is asked via a strict
 `json_schema` for N code-free breakthrough ideas. These are injected as a
 mandatory `## BREAKTHROUGH IDEA - IMPLEMENT THIS` block and rotate round-robin
-until exhausted. A top-level `paradigm_agentic:` block (same shape as
+until exhausted. The built-in idea guidance is library-centric (written for
+algorithmic benchmarks: "single-function library call", `library.function`
+approach types); `search.database.paradigm_domain_brief` replaces it with
+domain-supplied text while keeping the JSON contract — set it whenever
+"pick a library function" is not what a breakthrough means in your domain.
+A top-level `paradigm_agentic:` block (same shape as
 `agentic:`) makes those guide-pool calls run the backend's **native agent
 loop** — read-only file tools rooted at its `codebase_root` and, on the CLI
 backends, web search — independently of whether solution generation is

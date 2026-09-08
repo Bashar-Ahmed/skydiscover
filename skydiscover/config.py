@@ -516,6 +516,11 @@ class AdaEvolveDatabaseConfig(DatabaseConfig):
     paradigm_max_uses: int = 2
     paradigm_num_to_generate: int = 3
     paradigm_max_tried: int = 10
+    # When set, replaces the built-in library-centric technique guidance in
+    # paradigm generation with this domain-supplied brief (the JSON output
+    # contract is kept). Use it when "single library call" ideas make no
+    # sense for the problem domain.
+    paradigm_domain_brief: str = ""
 
     # Stagnation handling
     stagnation_threshold: int = 10

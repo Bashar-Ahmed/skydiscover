@@ -57,6 +57,7 @@ class ParadigmGenerator:
         higher_is_better: Optional[Dict[str, bool]] = None,
         fitness_key: Optional[str] = None,
         agentic: Optional[Any] = None,
+        domain_brief: str = "",
     ):
         """
         Initialize the paradigm generator.
@@ -74,6 +75,10 @@ class ParadigmGenerator:
                 can be grounded in a research library and the literature.
                 Honoured only when every pooled backend has a native agent
                 loop; otherwise plain generation with a one-time warning.
+            domain_brief: When non-empty, replaces the built-in
+                library-centric technique guidance (and its
+                "library.function" idea format) with this domain-supplied
+                text. The JSON output contract is unchanged.
         """
         self.llm_pool = llm_pool
         self.agentic = (
@@ -90,6 +95,7 @@ class ParadigmGenerator:
         self.objective_names = list(objective_names or [])
         self.higher_is_better = dict(higher_is_better or {})
         self.fitness_key = fitness_key
+        self.domain_brief = (domain_brief or "").strip()
 
     def _agentic_kwargs(self) -> Dict[str, Any]:
         """Per-call kwargs that switch the guide pool into its native agent loop."""
@@ -160,7 +166,27 @@ class ParadigmGenerator:
             List of paradigm dicts with keys:
             idea, description, what_to_optimize, cautions, approach_type
         """
-        set_call_context(**{**get_call_context(), "phase": "paradigm"})
+        prior_context = get_call_context()
+        set_call_context(**{**prior_context, "phase": "paradigm"})
+        try:
+            return await self._generate_inner(
+                current_program_solution,
+                current_best_score,
+                previously_tried_ideas,
+                evaluator_feedback,
+            )
+        finally:
+            # Restore the caller's phase so the iteration call that follows a
+            # paradigm generation is not logged as phase="paradigm".
+            set_call_context(**prior_context)
+
+    async def _generate_inner(
+        self,
+        current_program_solution: str,
+        current_best_score: float,
+        previously_tried_ideas: Optional[List[str]] = None,
+        evaluator_feedback: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         prompt = self._build_prompt(
             current_program_solution,
             current_best_score,
@@ -512,6 +538,10 @@ When a technique fails badly (score decreased significantly), understand WHY bef
         """Build the techniques guidance section."""
         if self._is_image_mode:
             return self._build_image_techniques_section()
+        if self.domain_brief:
+            return f"""## Domain Guidance
+
+{self.domain_brief}"""
         return """## Technique Guidance
 
 **Note:** Standard scientific libraries (scipy, numpy, etc.) are available. PyTorch and TensorFlow are not available.
@@ -637,6 +667,25 @@ Specific: "Use scipy.optimize.minimize with SLSQP method"
         """Build the output format section."""
         if self._is_image_mode:
             return self._build_image_output_format_section()
+        if self.domain_brief:
+            return f"""## Output Format
+
+**IMPORTANT:** Respond with a JSON object containing exactly {self.num_paradigms} idea objects under the "ideas" key.
+Do not include code patches or diffs — describe strategies in natural language.
+
+Generate {self.num_paradigms} breakthrough ideas of DIFFERENT types.
+
+Each idea must be a JSON object with these fields:
+- "idea": Clear, direct description of the MECHANISM being proposed
+- "description": Detailed implementation guide (5-10 sentences)
+- "what_to_optimize": What metrics/areas to focus on
+- "cautions": Important implementation details to watch for
+- "approach_type": Short mechanism category in "family.mechanism" format
+
+**Diversity Requirement:** Each idea must use a DIFFERENT approach type.
+Do not generate variations of the same mechanism.
+
+Return ONLY a JSON object in this shape: {{"ideas": [ ... ]}} with {self.num_paradigms} paradigm objects. No other text."""
         return f"""## Output Format
 
 **IMPORTANT:** Respond with a JSON object containing exactly {self.num_paradigms} idea objects under the "ideas" key.

@@ -97,6 +97,7 @@ class AdaEvolveController(DiscoveryController):
                 higher_is_better=getattr(db_config, "higher_is_better", {}),
                 fitness_key=getattr(db_config, "fitness_key", None),
                 agentic=getattr(self.config, "paradigm_agentic", None),
+                domain_brief=getattr(db_config, "paradigm_domain_brief", ""),
             )
             if (
                 getattr(self.config, "paradigm_agentic", None) is not None
