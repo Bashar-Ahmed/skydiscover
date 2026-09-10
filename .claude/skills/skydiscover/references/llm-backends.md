@@ -261,6 +261,13 @@ call. `vary_effort: false` stops the *jitter*, not the injection — calls still
 get `base_effort` (`"medium"` by default). To leave requests completely
 untouched set `temperature_emulation.enabled: false`.
 
+**Per-model overrides:** a model entry in `llm.models` may set its own
+`effort_ladder`, `base_effort`, and/or `effort_spread`; while pool-level
+emulation is active, that model draws effort from its own emulator (unset
+fields inherit the pool's). Use it when models saturate at different
+rungs — one shared centre mis-places them. Applies in `LLMPool.generate`
+and on the agentic delegation path; `generate_all` stays pool-level.
+
 `OpenAILLM.__init__` separately drops `temperature` for models that reject it,
 so a stale config value can't 400 a run.
 

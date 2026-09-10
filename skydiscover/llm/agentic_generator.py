@@ -216,7 +216,16 @@ class AgenticGenerator:
         call_kwargs = {}
         emul = getattr(self.llm_pool, "_emulated_kwargs", None)
         if callable(emul):
-            call_kwargs = dict(emul({}))
+            # Pass the sampled model's index so a per-model effort override
+            # applies on the agentic path too, not only in LLMPool.generate.
+            try:
+                midx = self.llm_pool.models.index(model)
+            except (ValueError, AttributeError):
+                midx = None
+            try:
+                call_kwargs = dict(emul({}, model_index=midx))
+            except TypeError:  # older pool without the model_index parameter
+                call_kwargs = dict(emul({}))
         # This path bypasses LLMPool.generate, so log the call here the same
         # way the pool does -- the call log is the only record of which
         # model and effort a generation actually used.

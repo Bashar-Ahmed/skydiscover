@@ -173,6 +173,15 @@ class LLMModelConfig:
     # Reasoning parameters
     reasoning_effort: Optional[str] = None
 
+    # Per-model temperature-emulation overrides. When pool-level emulation is
+    # active, a model that sets any of these draws its per-call reasoning
+    # effort from its OWN ladder/centre/spread instead of the pool's -- models
+    # saturate at different effort levels, and a shared ladder centres them
+    # all on one rung. Unset fields inherit the pool's emulation settings.
+    effort_ladder: Optional[List[str]] = None
+    base_effort: Optional[str] = None
+    effort_spread: Optional[float] = None
+
     # Consecutive usage-limit pauses tolerated for a single call before giving
     # up. Applies to every backend.
     max_usage_limit_waits: Optional[int] = None

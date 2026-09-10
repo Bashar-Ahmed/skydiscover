@@ -122,6 +122,44 @@ class LLMPool:
                 temperature=self.temperature,
                 rng=self.random_state,
             )
+            # Per-model effort overrides: a model that sets effort_ladder /
+            # base_effort / effort_spread gets its own emulator; the rest
+            # share the pool's. Models saturate at different effort rungs,
+            # so one shared centre can badly mis-place individual models.
+            self._model_emulators: List[Optional[TemperatureEmulator]] = []
+            for m in models_cfg:
+                if m.effort_ladder or m.base_effort or m.effort_spread is not None:
+                    per_cfg = TemperatureEmulationConfig(
+                        enabled=resolved.enabled,
+                        vary_model=resolved.vary_model,
+                        vary_effort=resolved.vary_effort,
+                        effort_ladder=(
+                            list(m.effort_ladder)
+                            if m.effort_ladder
+                            else list(resolved.effort_ladder)
+                        ),
+                        base_effort=m.base_effort or resolved.base_effort,
+                        effort_spread=(
+                            m.effort_spread
+                            if m.effort_spread is not None
+                            else resolved.effort_spread
+                        ),
+                        min_temperature=resolved.min_temperature,
+                        max_temperature=resolved.max_temperature,
+                    )
+                    emulator = TemperatureEmulator(
+                        config=per_cfg, temperature=self.temperature, rng=self.random_state
+                    )
+                    self._model_emulators.append(emulator)
+                    logger.info(
+                        "Per-model effort override for %s: ladder=%s, base=%s, spread=%s",
+                        m.name,
+                        emulator.effort_ladder,
+                        emulator.base_effort,
+                        per_cfg.effort_spread,
+                    )
+                else:
+                    self._model_emulators.append(None)
             self.effective_weights = self.temperature_emulator.model_weights(self.weights)
             # A run builds several pools with identical settings; log once.
             summary = self.temperature_emulator.describe(self.weights)
@@ -132,6 +170,7 @@ class LLMPool:
                 logger.info("Temperature emulation active: %s", summary)
                 logger._logged_emulation.add(summary_key)
         else:
+            self._model_emulators = [None] * len(models_cfg)
             self.effective_weights = list(self.weights)
 
         # Logging
@@ -240,17 +279,26 @@ class LLMPool:
                 )
         return self.models[idx]
 
-    def _emulated_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _emulated_kwargs(
+        self, kwargs: Dict[str, Any], model_index: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Per-call parameters derived from the emulated temperature.
 
         An explicit caller-supplied value always wins; this only fills gaps.
+        With ``model_index``, a model carrying a per-model effort override
+        draws from its own emulator instead of the pool's.
         """
-        if self.temperature_emulator is None:
+        emulator = self.temperature_emulator
+        # getattr: tests (and any embedder) may build a pool without __init__
+        per_model = getattr(self, "_model_emulators", None) or []
+        if model_index is not None and 0 <= model_index < len(per_model):
+            emulator = per_model[model_index] or emulator
+        if emulator is None:
             return kwargs
         if kwargs.get("reasoning_effort") is not None:
             return kwargs
 
-        effort = self.temperature_emulator.sample_effort(kwargs.get("temperature"))
+        effort = emulator.sample_effort(kwargs.get("temperature"))
         if effort is None:
             return kwargs
 
@@ -269,7 +317,11 @@ class LLMPool:
         has cycled.
         """
         model = self._sample_model(self._prompt_key(system_message, messages))
-        call_kwargs = self._emulated_kwargs(kwargs)
+        try:
+            model_index = self.models.index(model)
+        except ValueError:
+            model_index = None
+        call_kwargs = self._emulated_kwargs(kwargs, model_index=model_index)
         # The only place where both the sampled model and the sampled effort are
         # known; neither is recoverable from the config afterwards.
         details = {
