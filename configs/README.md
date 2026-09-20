@@ -8,7 +8,7 @@ All settings are YAML. Environment variables can be referenced with `${VAR}` syn
 
 | File | Search | Description |
 |------|--------|-------------|
-| **default.yaml** | Top-K | Minimal starting template — good for first experiments |
+| **default.yaml** | Top-K | The framework default: the calibrated Codex + Claude CLI pool (iteration and paradigm) with per-model effort ladders |
 | **adaevolve.yaml** | AdaEvolve | Full multi-island config with adaptive intensity, migration, paradigm breakthroughs, and ablation flags |
 | **evox.yaml** | EvoX | Co-evolving solution generation and search strategies |
 | **openevolve_native.yaml** | OpenEvolve Native | Native port of OpenEvolve's island-based MAP-Elites search with ring migration |

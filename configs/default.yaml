@@ -6,15 +6,76 @@ random_seed: 42
 
 # LLM configuration
 llm:
+  # ITERATION POOL (the framework default, calibrated on the NSE futures
+  # campaign): Codex sol 30%, Codex terra 40%, Claude Sonnet 5 30% draw
+  # shares. Every entry carries its OWN effort ladder (per-model
+  # emulation): models saturate at different rungs, so the centre is set
+  # per model. All local CLI backends: `codex login` / `claude auth login`,
+  # no API key. Valid Codex slugs:
+  #   jq -r '.models[] | select(.visibility != "hide") | .slug' ~/.codex/models_cache.json
   models:
-    # Driven by the local `claude` binary: needs `claude auth login`, no API key.
-    # Pinned by full name rather than the floating "opus" alias for reproducibility.
+    - name: "codex_cli/gpt-5.6-sol"
+      weight: 0.3
+      max_usage_limit_waits: 48
+      effort_ladder: ["medium", "high", "xhigh"]
+      base_effort: "medium"
+      effort_spread: 1.5
+    - name: "codex_cli/gpt-5.6-terra"
+      weight: 0.4
+      max_usage_limit_waits: 48
+      effort_ladder: ["medium", "high", "xhigh"]
+      base_effort: "xhigh"
+      effort_spread: 1.5
+    - name: "claude_cli/claude-sonnet-5"
+      weight: 0.3
+      max_usage_limit_waits: 48
+      effort_ladder: ["medium", "high", "xhigh"]
+      base_effort: "high"
+      effort_spread: 1.5
+  # PARADIGM POOL (AdaEvolve paradigm breakthroughs): Codex astra 40% (web
+  # search on), Claude Fable 5.1 40%, Claude Opus 5 20%. A paradigm call is
+  # rare and may think for a long time, hence the 90-minute timeout.
+  guide_models:
+    - name: "codex_cli/gpt-6-astra"
+      weight: 0.4
+      max_usage_limit_waits: 48
+      timeout: 5400
+      cli_extra_args: ["--config", "tools.web_search=true"]
+      effort_ladder: ["medium", "high", "xhigh"]
+      base_effort: "high"
+      effort_spread: 1.5
+    - name: "claude_cli/claude-fable-5-1"
+      weight: 0.4
+      max_usage_limit_waits: 48
+      timeout: 5400
+      effort_ladder: ["medium", "high", "xhigh"]
+      base_effort: "high"
+      effort_spread: 1.5
     - name: "claude_cli/claude-opus-5"
-      weight: 1.0
+      weight: 0.2
+      max_usage_limit_waits: 48
+      timeout: 5400
+      effort_ladder: ["medium", "high", "xhigh"]
+      base_effort: "high"
+      effort_spread: 1.5
+  # The CLIs expose no sampling knob: `temperature` drives the emulation block.
   temperature: 0.7
-  # top_p: 0.95  # omitted by default; some providers (e.g. Anthropic) reject both temperature and top_p
   max_tokens: 32000
-  timeout: 600
+  # One hour per iteration call: xhigh effort regularly thinks 10+ minutes.
+  timeout: 3600
+  retries: 3
+  retry_delay: 5
+  # Pool-level emulation: the fallback the per-model entries inherit unset
+  # fields from, and the setting used by the generate_all path. vary_model
+  # is off so the draw shares are honoured exactly.
+  temperature_emulation:
+    enabled: auto
+    vary_model: false
+    vary_effort: true
+    effort_ladder: ["medium", "high", "xhigh"]
+    base_effort: "high"
+    effort_spread: 1.5
+    max_temperature: 2.0
 
 # Database configuration
 search:

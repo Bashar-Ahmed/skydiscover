@@ -47,10 +47,87 @@ _PROVIDERS: Dict[str, tuple] = {
 # api_base, and resolving an API key for them would be misleading.
 _LOCAL_PROVIDERS = {"claude_cli", "claude-cli", "codex_cli", "codex-cli"}
 
-# Default model when a config names none.  Pinned to Opus 5 by full name rather
-# than the floating "opus" alias so a run is reproducible.  Driven by the local
-# `claude` binary, so it needs `claude auth login` but no API key.
-DEFAULT_MODEL = "claude_cli/claude-opus-5"
+# Default model POOL when a config names none (the pool calibrated on the NSE
+# futures campaign, 2026-09-12): three iteration models drawn by weight with
+# per-model effort ladders, and three paradigm ("guide") models for the rare,
+# long breakthrough calls.  Every entry is a local CLI backend (`codex login`
+# / `claude auth login`, no API key), pinned by full model name so a run is
+# reproducible.  `vary_model` is off in the default emulation block so the
+# weights are honoured exactly; cross-model variation comes from the pool's
+# no-repeat rule.
+DEFAULT_MODEL = "codex_cli/gpt-5.6-terra"   # single-model fallback / primary
+
+_DEFAULT_LADDER = ("medium", "high", "xhigh")
+_DEFAULT_SPREAD = 1.5
+
+
+def _default_models() -> List["LLMModelConfig"]:
+    """Iteration pool: Codex sol 30% (centre medium), Codex terra 40%
+    (centre xhigh), Claude Sonnet 5 30% (centre high).  Entries are tagged
+    so LLMConfig can tell the default pool from a user-supplied one."""
+    models = _iteration_pool()
+    for m in models:
+        m._from_default_pool = True
+    return models
+
+
+def _iteration_pool() -> List["LLMModelConfig"]:
+    return [
+        LLMModelConfig(
+            name="codex_cli/gpt-5.6-sol", weight=0.3, max_usage_limit_waits=48,
+            effort_ladder=list(_DEFAULT_LADDER), base_effort="medium",
+            effort_spread=_DEFAULT_SPREAD,
+        ),
+        LLMModelConfig(
+            name="codex_cli/gpt-5.6-terra", weight=0.4, max_usage_limit_waits=48,
+            effort_ladder=list(_DEFAULT_LADDER), base_effort="xhigh",
+            effort_spread=_DEFAULT_SPREAD,
+        ),
+        LLMModelConfig(
+            name="claude_cli/claude-sonnet-5", weight=0.3, max_usage_limit_waits=48,
+            effort_ladder=list(_DEFAULT_LADDER), base_effort="high",
+            effort_spread=_DEFAULT_SPREAD,
+        ),
+    ]
+
+
+def _default_guide_models() -> List["LLMModelConfig"]:
+    """Paradigm pool: Codex astra 40% (with web search), Claude Fable 5.1
+    40%, Claude Opus 5 20%; all centred on high; 90-minute per-call
+    timeout because a paradigm call is rare and may think for a long time."""
+    return [
+        LLMModelConfig(
+            name="codex_cli/gpt-6-astra", weight=0.4, max_usage_limit_waits=48,
+            timeout=5400, cli_extra_args=["--config", "tools.web_search=true"],
+            effort_ladder=list(_DEFAULT_LADDER), base_effort="high",
+            effort_spread=_DEFAULT_SPREAD,
+        ),
+        LLMModelConfig(
+            name="claude_cli/claude-fable-5-1", weight=0.4, max_usage_limit_waits=48,
+            timeout=5400, effort_ladder=list(_DEFAULT_LADDER), base_effort="high",
+            effort_spread=_DEFAULT_SPREAD,
+        ),
+        LLMModelConfig(
+            name="claude_cli/claude-opus-5", weight=0.2, max_usage_limit_waits=48,
+            timeout=5400, effort_ladder=list(_DEFAULT_LADDER), base_effort="high",
+            effort_spread=_DEFAULT_SPREAD,
+        ),
+    ]
+
+
+def _default_temperature_emulation() -> Dict[str, Any]:
+    """Pool-level emulation: the inheritance fallback for per-model entries
+    and the setting used by the generate_all path.  Same three-rung shape as
+    the per-model ladders, centred on high."""
+    return {
+        "enabled": "auto",
+        "vary_model": False,
+        "vary_effort": True,
+        "effort_ladder": list(_DEFAULT_LADDER),
+        "base_effort": "high",
+        "effort_spread": _DEFAULT_SPREAD,
+        "max_temperature": 2.0,
+    }
 
 
 def is_local_provider(provider: Optional[str]) -> bool:
@@ -214,21 +291,24 @@ class LLMConfig(LLMModelConfig):
     top_p: Optional[float] = None
     max_tokens: int = 32000
 
-    # Request parameters
-    timeout: int = 600
+    # Request parameters.  One hour per call: xhigh effort regularly thinks
+    # 10+ minutes and Codex retries a timeout at the SAME effort, so give it
+    # room instead of burning retries.
+    timeout: int = 3600
     retries: int = 3
     retry_delay: int = 5
 
-    # model(s) for solution discovery
-    models: List[LLMModelConfig] = field(
-        default_factory=lambda: [LLMModelConfig(name=DEFAULT_MODEL)]
-    )
+    # model(s) for solution discovery -- the default iteration pool
+    models: List[LLMModelConfig] = field(default_factory=_default_models)
 
     # model(s) for evaluator
     evaluator_models: List[LLMModelConfig] = field(default_factory=lambda: [])
 
     # model(s) for guide tasks (idea generation, paradigm breakthroughs, etc.)
-    # If not specified, falls back to using the main 'models' list
+    # If not specified: the default paradigm pool when `models` is the default
+    # iteration pool, otherwise the user's own 'models' list (see __post_init__)
+    # -- a user who names one model must not silently get other backends for
+    # paradigm calls.
     guide_models: List[LLMModelConfig] = field(default_factory=lambda: [])
 
     # Reasoning parameters (inherited from LLMModelConfig but can be overridden)
@@ -239,7 +319,9 @@ class LLMConfig(LLMModelConfig):
     # Claude Code CLI; Opus 4.6 and the 4.5 family still accept it). See
     # skydiscover/llm/temperature.py. Under the default "auto" this is inert
     # for providers that still support real temperature.
-    temperature_emulation: Dict[str, Any] = field(default_factory=dict)
+    temperature_emulation: Dict[str, Any] = field(
+        default_factory=_default_temperature_emulation
+    )
 
     def __post_init__(self):
         """Post-initialization to set up model configurations"""
@@ -247,9 +329,15 @@ class LLMConfig(LLMModelConfig):
         if not self.evaluator_models:
             self.evaluator_models = self.models.copy()
 
-        # If no guide models are defined, use the same models as for solution discovery
+        # If no guide models are defined: the default paradigm pool goes with
+        # the default iteration pool; a user-supplied pool guides itself.
         if not self.guide_models:
-            self.guide_models = self.models.copy()
+            if self.models and all(
+                getattr(m, "_from_default_pool", False) for m in self.models
+            ):
+                self.guide_models = _default_guide_models()
+            else:
+                self.guide_models = self.models.copy()
 
         # Resolve per-model api_base, api_key, and bare name from provider prefix
         # Check if user explicitly set api_base at the LLMConfig level
